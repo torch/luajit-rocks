@@ -1,0 +1,21 @@
+-- I do not know what luarocks guys have in mind
+-- If they depend on external commands, it seems
+-- completely irrelevant to install packages to
+-- replace those commands (as you need these freaking
+-- commands anyways to install the first modules!!)
+-- On top of that it breaks features. BOUH.
+fs_use_modules = false
+
+rocks_trees = {
+   home..[[/.luarocks]],
+   {root="@CMAKE_INSTALL_PREFIX@", bin_dir="@CMAKE_INSTALL_PREFIX@/@INSTALL_BIN_SUBDIR@", lib_dir="@CMAKE_INSTALL_PREFIX@/@INSTALL_LUA_CPATH_SUBDIR@", lua_dir="@CMAKE_INSTALL_PREFIX@/@INSTALL_LUA_PATH_SUBDIR@"}
+}
+
+rocks_servers = {
+   [[https://raw.github.com/torch/rocks/master]],
+   [[http://luarocks.org/repositories/rocks]]
+}
+
+variables = {
+  LUALIB = [[libluajit.lib]]
+}
