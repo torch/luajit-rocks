@@ -9,6 +9,8 @@ project(LuaJIT C ASM)
 CMAKE_MINIMUM_REQUIRED(VERSION 2.6 FATAL_ERROR)
 CMAKE_POLICY(VERSION 2.6)
 
+OPTION(WITH_AMALG "Build eveything in one shot (needs memory)" ON)
+
 SET(INSTALL_BIN_SUBDIR "bin" CACHE STRING "installation executable subdirectory name")
 SET(INSTALL_LIB_SUBDIR "lib" CACHE STRING "installation library subdirectory name")
 SET(INSTALL_INCLUDE_SUBDIR "include" CACHE STRING "installation include subdirectory name")
@@ -23,29 +25,6 @@ IF(UNIX)
     ADD_DEFINITIONS(-DLUA_ROOT="${CMAKE_INSTALL_PREFIX}")
   ENDIF()
 ENDIF()
-  
-# RPATH
-IF(UNIX)
-  OPTION(WITH_RPATH "Build library with executable rpaths" ON)
-
-  IF(WITH_RPATH)
-    SET(CMAKE_SKIP_BUILD_RPATH FALSE)
-    SET(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
-    SET(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
-    FILE(RELATIVE_PATH INSTALL_BIN2LIB
-      "${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_SUBDIR}" "${CMAKE_INSTALL_PREFIX}/${INSTALL_LIB_SUBDIR}")
-    IF(NOT APPLE)
-      OPTION(WITH_DYNAMIC_RPATH
-	"Build libraries with executable relative rpaths (\$ORIGIN)" ON )
-    ENDIF(NOT APPLE)
-    IF (WITH_DYNAMIC_RPATH OR APPLE)
-      SET(CMAKE_INSTALL_RPATH "\$ORIGIN/${INSTALL_BIN2LIB}")
-    ELSE (WITH_DYNAMIC_RPATH OR APPLE)
-      SET(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/${INSTALL_LIB_SUBDIR}")
-    ENDIF (WITH_DYNAMIC_RPATH OR APPLE)
-    SET(CMAKE_INSTALL_NAME_DIR "@executable_path/${INSTALL_BIN2LIB}")
-  ENDIF(WITH_RPATH)
-ENDIF(UNIX)
 
 # Various includes
 INCLUDE(CheckLibraryExists)
@@ -291,13 +270,22 @@ SET(DEPS
 ## COMPILE
 include_directories(${CMAKE_CURRENT_BINARY_DIR} dynasm src)
 
-add_library(libluajit SHARED ${SRC_LJCORE} ${DEPS} )
+IF(WITH_AMALG)
+  add_library(libluajit SHARED src/ljamalg.c ${DEPS} )
+ELSE()
+  add_library(libluajit SHARED ${SRC_LJCORE} ${DEPS} )
+ENDIF()
+
 target_link_libraries (libluajit ${LIBS} )
 SET_TARGET_PROPERTIES(libluajit PROPERTIES 
   PREFIX "lib" IMPORT_PREFIX "lib" OUTPUT_NAME "luajit")
 
-add_executable(luajit src/luajit.c)
-target_link_libraries(luajit libluajit)
+IF(WITH_AMALG)
+  add_executable(luajit src/luajit.c src/ljamalg.c ${DEPS})
+ELSE()
+  add_executable(luajit src/luajit.c ${SRC_LJCORE} ${DEPS})
+ENDIF()
+target_link_libraries(luajit ${LIBS})
 
 INSTALL(TARGETS libluajit luajit
   EXPORT torch-exports

@@ -1,4 +1,5 @@
-#!/usr/bin/env lua
+#!/Users/ronan/usr72/bin/luajit
+package.path = [[/Users/ronan/usr72/share/lua/5.1//?.lua;/Users/ronan/usr72/share/lua/5.1//?/init.lua;]]..package.path
 
 local command_line = require("luarocks.command_line")
 
