@@ -11,12 +11,19 @@ CMAKE_POLICY(VERSION 2.6)
 
 OPTION(WITH_AMALG "Build eveything in one shot (needs memory)" ON)
 
-SET(INSTALL_BIN_SUBDIR "bin" CACHE STRING "installation executable subdirectory name")
-SET(INSTALL_LIB_SUBDIR "lib" CACHE STRING "installation library subdirectory name")
 SET(INSTALL_INCLUDE_SUBDIR "include" CACHE STRING "installation include subdirectory name")
-SET(INSTALL_LUA_PATH_SUBDIR "share/lua/5.1") # not editable
-SET(INSTALL_LUA_LIB_SUBDIR "lib" CACHE STRING "installation lua lib subdirectory name")
-SET(INSTALL_LUA_CPATH_SUBDIR "${INSTALL_LUA_LIB_SUBDIR}/lua/5.1") # not editable
+IF(WIN32)
+  SET(INSTALL_BIN_SUBDIR "." CACHE STRING "installation executable subdirectory name")
+  SET(INSTALL_LIB_SUBDIR "." CACHE STRING "installation library subdirectory name")
+  SET(INSTALL_LUA_PATH_SUBDIR "lua") # not editable
+  SET(INSTALL_LUA_CPATH_SUBDIR ".") # not editable
+ELSE()
+  SET(INSTALL_BIN_SUBDIR "bin" CACHE STRING "installation executable subdirectory name")
+  SET(INSTALL_LIB_SUBDIR "lib" CACHE STRING "installation library subdirectory name")
+  SET(INSTALL_LUA_PATH_SUBDIR "share/lua/5.1") # not editable
+  SET(INSTALL_LUA_LIB_SUBDIR "lib" CACHE STRING "installation lua lib subdirectory name")
+  SET(INSTALL_LUA_CPATH_SUBDIR "${INSTALL_LUA_LIB_SUBDIR}/lua/5.1") # not editable
+ENDIF()
 
 ADD_DEFINITIONS(-DLUA_MULTILIB="${INSTALL_LUA_LIB_SUBDIR}")
 
@@ -24,6 +31,11 @@ IF(UNIX)
   IF(NOT CMAKE_INSTALL_PREFIX STREQUAL "/usr/local")
     ADD_DEFINITIONS(-DLUA_ROOT="${CMAKE_INSTALL_PREFIX}")
   ENDIF()
+ENDIF()
+
+# Ugly warnings
+IF(MSVC)
+  ADD_DEFINITIONS(-D_CRT_SECURE_NO_WARNINGS)
 ENDIF()
 
 # Various includes

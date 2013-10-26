@@ -3,14 +3,23 @@ project(luarocks)
 CMAKE_MINIMUM_REQUIRED(VERSION 2.6 FATAL_ERROR)
 CMAKE_POLICY(VERSION 2.6)
 
-SET(INSTALL_BIN_SUBDIR "bin" CACHE STRING "installation executable subdirectory name")
-SET(INSTALL_LIB_SUBDIR "lib" CACHE STRING "installation library subdirectory name")
 SET(INSTALL_INCLUDE_SUBDIR "include" CACHE STRING "installation include subdirectory name")
-SET(INSTALL_LUA_PATH_SUBDIR "share/lua/5.1") # not editable
-SET(INSTALL_LUA_LIB_SUBDIR "lib" CACHE STRING "installation lua lib subdirectory name")
-SET(INSTALL_LUA_CPATH_SUBDIR "${INSTALL_LUA_LIB_SUBDIR}/lua/5.1") # not editable
-SET(INSTALL_LUAROCKS_ROCKS_SUBDIR "lib/luarocks/rocks" CACHE STRING "installation luarocks rocks subdirectory name")
-SET(INSTALL_LUAROCKS_SYSCONF_SUBDIR "etc/luarocks" CACHE STRING "installation luarocks sysconfig subdirectory name")
+IF(WIN32)
+  SET(INSTALL_BIN_SUBDIR "." CACHE STRING "installation executable subdirectory name")
+  SET(INSTALL_LIB_SUBDIR "." CACHE STRING "installation library subdirectory name")
+  SET(INSTALL_LUA_PATH_SUBDIR "lua") # not editable
+  SET(INSTALL_LUA_CPATH_SUBDIR ".") # not editable
+  SET(INSTALL_LUAROCKS_ROCKS_SUBDIR "luarocks" CACHE STRING "installation luarocks rocks subdirectory name")
+  SET(INSTALL_LUAROCKS_SYSCONF_SUBDIR "luarocks" CACHE STRING "installation luarocks sysconfig subdirectory name")
+ELSE()
+  SET(INSTALL_BIN_SUBDIR "bin" CACHE STRING "installation executable subdirectory name")
+  SET(INSTALL_LIB_SUBDIR "lib" CACHE STRING "installation library subdirectory name")
+  SET(INSTALL_LUA_PATH_SUBDIR "share/lua/5.1") # not editable
+  SET(INSTALL_LUA_LIB_SUBDIR "lib" CACHE STRING "installation lua lib subdirectory name")
+  SET(INSTALL_LUA_CPATH_SUBDIR "${INSTALL_LUA_LIB_SUBDIR}/lua/5.1") # not editable
+  SET(INSTALL_LUAROCKS_ROCKS_SUBDIR "lib/luarocks/rocks" CACHE STRING "installation luarocks rocks subdirectory name")
+  SET(INSTALL_LUAROCKS_SYSCONF_SUBDIR "etc/luarocks" CACHE STRING "installation luarocks sysconfig subdirectory name")
+ENDIF()
 
 SET(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake"
                       "${CMAKE_MODULE_PATH}")
