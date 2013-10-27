@@ -302,6 +302,7 @@ ELSE()
     add_executable(luajit src/luajit.c ${SRC_LJCORE} ${DEPS})
   ENDIF()
   target_link_libraries(luajit ${LIBS})
+  SET_TARGET_PROPERTIES(luajit PROPERTIES ENABLE_EXPORTS ON)
 ENDIF()
 
 INSTALL(TARGETS libluajit luajit
