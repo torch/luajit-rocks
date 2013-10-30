@@ -1,7 +1,7 @@
 CMake-based LuaJIT + Luarocks
 =============================
 
-# What the point? #
+# What's the point? #
 
 We want to provide an easy to way to users for installing _recent_ versions
 of LuaJIT and luarocks, with almost no efforts.
