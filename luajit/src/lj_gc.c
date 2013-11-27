@@ -678,7 +678,8 @@ int LJ_FASTCALL lj_gc_step(lua_State *L)
   lim = (GCSTEPSIZE/100) * g->gc.stepmul;
   if (lim == 0)
     lim = LJ_MAX_MEM;
-  g->gc.debt += g->gc.total - g->gc.threshold;
+  if (g->gc.total > g->gc.threshold)
+    g->gc.debt += g->gc.total - g->gc.threshold;
   do {
     lim -= (MSize)gc_onestep(L);
     if (g->gc.state == GCSpause) {
@@ -689,12 +690,14 @@ int LJ_FASTCALL lj_gc_step(lua_State *L)
   } while ((int32_t)lim > 0);
   if (g->gc.debt < GCSTEPSIZE) {
     g->gc.threshold = g->gc.total + GCSTEPSIZE;
+    g->vmstate = ostate;
+    return -1;
   } else {
     g->gc.debt -= GCSTEPSIZE;
     g->gc.threshold = g->gc.total;
+    g->vmstate = ostate;
+    return 0;
   }
-  g->vmstate = ostate;
-  return 0;
 }
 
 /* Ditto, but fix the stack top first. */
