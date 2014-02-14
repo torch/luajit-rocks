@@ -2,7 +2,7 @@
 ** FOLD: Constant Folding, Algebraic Simplifications and Reassociation.
 ** ABCelim: Array Bounds Check Elimination.
 ** CSE: Common-Subexpression Elimination.
-** Copyright (C) 2005-2013 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2014 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #define lj_opt_fold_c
@@ -1700,7 +1700,8 @@ LJFOLD(ABC any any)
 LJFOLDF(abc_invar)
 {
   /* Invariant ABC marked as PTR. Drop if op1 is invariant, too. */
-  if (!irt_isint(fins->t) && fins->op1 < J->chain[IR_LOOP])
+  if (!irt_isint(fins->t) && fins->op1 < J->chain[IR_LOOP] &&
+      !irt_isphi(IR(fins->op1)->t))
     return DROPFOLD;
   return NEXTFOLD;
 }

@@ -1,6 +1,6 @@
 /*
 ** Trace recorder (bytecode -> SSA IR).
-** Copyright (C) 2005-2013 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2014 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #define lj_record_c
@@ -1389,6 +1389,7 @@ static void check_call_unroll(jit_State *J, TraceNo lnk)
   int32_t count = 0;
   if ((J->pt->flags & PROTO_VARARG)) depth--;  /* Vararg frame still missing. */
   for (; depth > 0; depth--) {  /* Count frames with same prototype. */
+    if (frame_iscont(frame)) depth--;
     frame = frame_prev(frame);
     if (mref(frame_func(frame)->l.pc, void) == pc)
       count++;
@@ -2130,7 +2131,7 @@ static const BCIns *rec_setup_root(jit_State *J)
   case BC_RET0:
   case BC_RET1:
     /* No bytecode range check for down-recursive root traces. */
-    J->maxslot = ra + bc_d(ins);
+    J->maxslot = ra + bc_d(ins) - 1;
     break;
   case BC_FUNCF:
     /* No bytecode range check for root traces started by a hot call. */
