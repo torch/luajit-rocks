@@ -1,6 +1,6 @@
 /*
 ** LuaJIT core and libraries amalgamation.
-** Copyright (C) 2005-2013 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2014 Mike Pall. See Copyright Notice in luajit.h
 */
 
 /*
@@ -22,7 +22,7 @@
 #endif
 
 #ifndef WINVER
-#define WINVER 0x0500
+#define WINVER 0x0501
 #endif
 
 #include "lua.h"
