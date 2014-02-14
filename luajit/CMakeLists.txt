@@ -38,6 +38,18 @@ IF(MSVC)
   ADD_DEFINITIONS(-D_CRT_SECURE_NO_WARNINGS)
 ENDIF()
 
+# On MacOS X, make sure the install path of the luajit library is relative
+# such that it can be found by other executables (e.g. qtlua)
+IF(APPLE)
+  # Check if libraries are installed into a system dir
+  LIST(FIND CMAKE_PLATFORM_IMPLICIT_LINK_DIRECTORIES "${CMAKE_INSTALL_PREFIX}/${INSTALL_LIB_SUBDIR}" _LIB_IS_SYSTEM_DIR_)
+  IF("${_LIB_IS_SYSTEM_DIR_}" STREQUAL "-1")
+    FILE(RELATIVE_PATH INSTALL_BIN2LIB
+      "${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_SUBDIR}" "${CMAKE_INSTALL_PREFIX}/${INSTALL_LIB_SUBDIR}")
+    SET(CMAKE_INSTALL_NAME_DIR "@executable_path/${INSTALL_BIN2LIB}")
+  ENDIF()
+ENDIF()
+
 # Various includes
 INCLUDE(CheckLibraryExists)
 INCLUDE(CheckFunctionExists)
