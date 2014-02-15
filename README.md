@@ -21,6 +21,8 @@ In addition,
   - Luarocks will come installed with [Torch rocks repository](http://torch.github.io/rocks.html).
   
   - Luarocks comes with mandatory system command line tools under Windows.
+
+  - Readline support for LuaJIT.
   
 # Pre-requisites
 
