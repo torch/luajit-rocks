@@ -411,6 +411,14 @@ static int docall(lua_State *L, int narg, int clear)
 static void print_version(void)
 {
   fputs(LUAJIT_VERSION " -- " LUAJIT_COPYRIGHT ". " LUAJIT_URL "\n", stdout);
+  fputs("\n", stdout);
+  fputs(" _____              _     \n", stdout);
+  fputs("|_   _|            | |    \n", stdout);
+  fputs("  | | ___  _ __ ___| |__  \n", stdout);
+  fputs("  | |/ _ \\| '__/ __| '_ \\ \n", stdout);
+  fputs("  | | (_) | | | (__| | | |\n", stdout);
+  fputs("  \\_/\\___/|_|  \\___|_| |_|\n", stdout);
+  fputs("\n", stdout);
 }
 
 static void print_jit_status(lua_State *L)
