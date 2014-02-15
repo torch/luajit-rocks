@@ -164,6 +164,18 @@ static int lua_rl_dmadd(dmlist *ml, const char *p, size_t pn, const char *s,
 static int lua_rl_getmetaindex(lua_State *L)
 {
   if (!lua_getmetatable(L, -1)) { lua_pop(L, 1); return 0; }
+
+  /* prefer __metatable if it exists */
+  lua_pushstring(L, "__metatable");
+  lua_rawget(L, -2);
+  if(lua_istable(L, -1))
+  {
+    lua_remove(L, -2);
+    return 1;
+  }
+  else
+    lua_pop(L, 1);
+
   lua_pushstring(L, "__index");
   lua_rawget(L, -2);
   lua_replace(L, -2);
