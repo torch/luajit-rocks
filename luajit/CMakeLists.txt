@@ -336,5 +336,5 @@ INSTALL(TARGETS libluajit luajit
 
 INSTALL(FILES
   src/jit/bc.lua src/jit/v.lua src/jit/dump.lua src/jit/dis_x86.lua src/jit/dis_x64.lua src/jit/dis_arm.lua
-  src/jit/dis_ppc.lua src/jit/dis_mips.lua src/jit/dis_mipsel.lua src/jit/bcsave.lua ${CMAKE_CURRENT_BINARY_DIR}/vmdef.lua
+  src/jit/dis_ppc.lua src/jit/dis_mips.lua src/jit/dis_mipsel.lua src/jit/bcsave.lua src/jit/bc.lua src/jit/p.lua src/jit/bc.lua src/jit/zone.lua ${CMAKE_CURRENT_BINARY_DIR}/vmdef.lua
   DESTINATION "${INSTALL_LUA_PATH_SUBDIR}/jit")
