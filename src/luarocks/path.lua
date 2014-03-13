@@ -295,6 +295,12 @@ function configure_paths(rockspec)
    rockspec.variables = vars
 end
 
+--- Produce a versioned version of a filename.
+-- @param file string: filename (must start with prefix)
+-- @param prefix string: Path prefix for file
+-- @param name string: Rock name
+-- @param version string: Rock version
+-- @return string: a pathname with the same directory parts and a versioned basename.
 function versioned_name(file, prefix, name, version)
    assert(type(file) == "string")
    assert(type(name) == "string")
@@ -330,7 +336,7 @@ function map_trees(deps_mode, fn, ...)
          use = true
       end
       for _, tree in ipairs(cfg.rocks_trees) do
-         if dir.normalize(tree) == dir.normalize(cfg.root_dir) then
+         if dir.normalize(rocks_tree_to_string(tree)) == dir.normalize(rocks_tree_to_string(cfg.root_dir)) then
             use = true
          end
          if use then
@@ -404,9 +410,17 @@ function run(...)
       util.printout(util.remove_path_dupes(lr_bin, ';'))
       return true
    end
+   
+   if flags["append"] then
+      lr_path = package.path .. ";" .. lr_path
+      lr_cpath = package.cpath .. ";" .. lr_cpath
+   else
+      lr_path =  lr_path.. ";" .. package.path
+      lr_cpath = lr_cpath .. ";" .. package.cpath
+   end
 
-   util.printout(cfg.export_lua_path:format(util.remove_path_dupes(package.path, ';')))
-   util.printout(cfg.export_lua_cpath:format(util.remove_path_dupes(package.cpath, ';')))
+   util.printout(cfg.export_lua_path:format(util.remove_path_dupes(lr_path, ';')))
+   util.printout(cfg.export_lua_cpath:format(util.remove_path_dupes(lr_cpath, ';')))
    if flags["bin"] then
       table.insert(bin_dirs, 1, os.getenv("PATH"))
       local lr_bin = util.remove_path_dupes(table.concat(bin_dirs, cfg.export_path_separator), cfg.export_path_separator)

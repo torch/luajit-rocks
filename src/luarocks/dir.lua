@@ -17,13 +17,12 @@ end
 
 --- Strip the name off a path+filename.
 -- @param pathname string: A path+name, such as "/a/b/c".
--- @return string: The filename without its path, such as "/a/b/".
--- For entries such as "/a/b/", "/a/" is returned. If there are
+-- @return string: The filename without its path, such as "/a/b".
+-- For entries such as "/a/b/", "/a" is returned. If there are
 -- no directory separators in input, "" is returned.
 function dir_name(pathname)
    assert(type(pathname) == "string")
-
-   return (pathname:gsub("/*$", ""):match("(.*/)[^/]*")) or ""
+   return (pathname:gsub("/*$", ""):match("(.*)[/]+[^/]*")) or ""
 end
 
 --- Describe a path in a cross-platform way.
@@ -36,17 +35,11 @@ end
 -- @return string: a string with a platform-specific representation
 -- of the path.
 function path(...)
-   local items = {...}
-   local i = 1
-   while items[i] do
-      items[i] = items[i]:gsub("(.+)/+$", "%1")
-      if items[i] == "" then
-         table.remove(items, i)
-      else
-         i = i + 1
-      end
+   local t = {...}
+   while t[1] == "" do
+      table.remove(t, 1)
    end
-   return (table.concat(items, "/"):gsub("(.+)/+$", "%1"))
+   return (table.concat(t, "/"):gsub("([^:])/+", "%1/"):gsub("^/+", "/"):gsub("/*$", ""))
 end
 
 --- Split protocol and path from an URL or local pathname.
@@ -65,6 +58,14 @@ function split_url(url)
    return protocol, pathname
 end
 
+--- Normalize a url or local path.
+-- URLs should be in the "protocol://path" format. System independent
+-- forward slashes are used, removing trailing and double slashes
+-- @param url string: an URL or a local pathname.
+-- @return string: Normalized result.
 function normalize(name)
-   return name:gsub("\\", "/"):gsub("(.)/*$", "%1")
+   local protocol, pathname = split_url(name)
+   pathname = pathname:gsub("\\", "/"):gsub("(.)/*$", "%1"):gsub("//", "/")
+   if protocol ~= "file" then pathname = protocol .."://"..pathname end
+   return pathname
 end

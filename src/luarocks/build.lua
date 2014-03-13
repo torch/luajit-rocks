@@ -31,7 +31,8 @@ or the name of a rock to be fetched from a repository.
                     rock after building a new one. This behavior can
                     be made permanent by setting keep_other_versions=true
                     in the configuration file.
-]]
+
+]]..util.deps_mode_help()
 
 --- Install files to a given location.
 -- Takes a table where the array part is a list of filenames to be copied.
@@ -53,19 +54,31 @@ local function install_files(files, location, is_module_path)
    if files then
       for k, file in pairs(files) do
          local dest = location
+         local filename = dir.base_name(file)
          if type(k) == "string" then
+            local modname = k
             if is_module_path then
-               dest = dir.path(location, path.module_to_path(k))
-               fs.make_dir(dest)
+               dest = dir.path(location, path.module_to_path(modname))
+               local ok, err = fs.make_dir(dest)
+               if not ok then return nil, err end
+               if filename:match("%.lua$") then
+                  local basename = modname:match("([^.]+)$")
+                  local baseinfo = filename:gsub("%.lua$", "")
+                  if basename ~= baseinfo then
+                     filename = basename..".lua"
+                  end
+               end
             else
-               dest = dir.path(location, dir.dir_name(k))
-               fs.make_dir(dest)
-               dest = dir.path(dest, dir.base_name(k))
+               dest = dir.path(location, dir.dir_name(modname))
+               local ok, err = fs.make_dir(dest)
+               if not ok then return nil, err end
+               filename = dir.base_name(modname)
             end
          else
-            fs.make_dir(dest)
+            local ok, err = fs.make_dir(dest)
+            if not ok then return nil, err end
          end
-         local ok = fs.copy(dir.path(file), dest)
+         local ok = fs.copy(dir.path(file), dir.path(dest, filename))
          if not ok then
             return nil, "Failed copying "..file
          end
@@ -145,7 +158,7 @@ function build_rockspec(rockspec_file, need_to_fetch, minimal_mode, deps_mode)
       end
    end
 
-   ok, err, errcode = deps.check_external_deps(rockspec, "build")
+   local ok, err, errcode = deps.check_external_deps(rockspec, "build")
    if err then
       return nil, err, errcode
    end
@@ -162,7 +175,8 @@ function build_rockspec(rockspec_file, need_to_fetch, minimal_mode, deps_mode)
          if not ok then
             return nil, source_dir, errcode
          end
-         fs.change_dir(source_dir)
+         local ok, err = fs.change_dir(source_dir)
+         if not ok then return nil, err end
       elseif rockspec.source.file then
          local ok, err = fs.unpack_archive(rockspec.source.file)
          if not ok then
@@ -180,7 +194,8 @@ function build_rockspec(rockspec_file, need_to_fetch, minimal_mode, deps_mode)
    }
    
    for _, d in pairs(dirs) do
-      fs.make_dir(d.name)
+      local ok, err = fs.make_dir(d.name)
+      if not ok then return nil, err end
    end
    local rollback = util.schedule_function(function()
       fs.delete(path.install_dir(name, version))
@@ -229,7 +244,12 @@ function build_rockspec(rockspec_file, need_to_fetch, minimal_mode, deps_mode)
       end
    end
    
-   local copy_directories = build.copy_directories or {"doc"}
+   local copy_directories = build.copy_directories
+   local copying_default = false
+   if not copy_directories then
+      copy_directories = {"doc"}
+      copying_default = true
+   end
 
    for _, copy_dir in pairs(copy_directories) do
       if fs.is_dir(copy_dir) then
@@ -237,7 +257,9 @@ function build_rockspec(rockspec_file, need_to_fetch, minimal_mode, deps_mode)
          fs.make_dir(dest)
          fs.copy_contents(copy_dir, dest)
       else
-         util.warning("Directory '"..copy_dir.."' not found")
+         if not copying_default then
+            return nil, "Directory '"..copy_dir.."' not found"
+         end
       end
    end
 
@@ -300,7 +322,8 @@ function build_rock(rock_file, need_to_fetch, deps_mode)
       return nil, err, errcode
    end
    local rockspec_file = path.rockspec_name_from_rock(rock_file)
-   fs.change_dir(unpack_dir)
+   local ok, err = fs.change_dir(unpack_dir)
+   if not ok then return nil, err end
    local ok, err, errcode = build_rockspec(rockspec_file, need_to_fetch, false, deps_mode)
    fs.pop_dir()
    return ok, err, errcode
@@ -329,8 +352,8 @@ end
 -- if returned a result, installs the matching rock.
 -- @param version string: When passing a package name, a version number may
 -- also be given.
--- @return boolean or (nil, string): True if build was successful; nil and an
--- error message otherwise.
+-- @return boolean or (nil, string, exitcode): True if build was successful; nil and an
+-- error message otherwise. exitcode is optionally returned.
 function run(...)
    local flags, name, version = util.parse_flags(...)
    if type(name) ~= "string" then
@@ -342,7 +365,7 @@ function run(...)
       return pack.pack_binary_rock(name, version, do_build, name, version, deps.get_deps_mode(flags))
    else
       local ok, err = fs.check_command_permissions(flags)
-      if not ok then return nil, err end
+      if not ok then return nil, err, cfg.errorcodes.PERMISSIONDENIED end
       ok, err = do_build(name, version, deps.get_deps_mode(flags))
       if not ok then return nil, err end
       local name, version = ok, err

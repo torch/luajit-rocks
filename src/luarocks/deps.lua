@@ -34,7 +34,7 @@ local operators = {
 }
 
 local deltas = {
-   scm =    1000,
+   scm =    1100,
    cvs =    1000,
    rc =    -1000,
    pre =   -10000,
@@ -217,7 +217,7 @@ end
 function parse_dep(dep)
    assert(type(dep) == "string")
 
-   local name, rest = dep:match("^%s*([a-zA-Z][a-zA-Z0-9%.%-%_]*)%s*(.*)")
+   local name, rest = dep:match("^%s*([a-zA-Z0-9][a-zA-Z0-9%.%-%_]*)%s*(.*)")
    if not name then return nil, "failed to extract dependency name from '"..tostring(dep).."'" end
    local constraints, err = parse_constraints(rest)
    if not constraints then return nil, err end
@@ -323,9 +323,10 @@ end
 local function match_dep(dep, blacklist, deps_mode)
    assert(type(dep) == "table")
 
-   local versions
-   if dep.name == "lua" then
-      versions = { cfg.lua_version }
+   local versions = cfg.rocks_provided[dep.name]
+   if cfg.rocks_provided[dep.name] then
+      -- provided rocks have higher priority than manifest's rocks
+      versions = { cfg.rocks_provided[dep.name] }
    else
       versions = manif_core.get_versions(dep.name, deps_mode)
    end
@@ -365,19 +366,21 @@ end
 -- @param blacklist table or nil: Program versions to not use as valid matches.
 -- Table where keys are program names and values are tables where keys
 -- are program versions and values are 'true'.
--- @return table, table: A table where keys are dependencies parsed
+-- @return table, table, table: A table where keys are dependencies parsed
 -- in table format and values are tables containing fields 'name' and
--- version' representing matches, and a table of missing dependencies
--- parsed as tables.
+-- version' representing matches; a table of missing dependencies
+-- parsed as tables; and a table of "no-upgrade" missing dependencies
+-- (to be used in plugin modules so that a plugin does not force upgrade of
+-- its parent application).
 function match_deps(rockspec, blacklist, deps_mode)
    assert(type(rockspec) == "table")
    assert(type(blacklist) == "table" or not blacklist)
    local matched, missing, no_upgrade = {}, {}, {}
-
+   
    for _, dep in ipairs(rockspec.dependencies) do
       local found = match_dep(dep, blacklist and blacklist[dep.name] or nil, deps_mode)
       if found then
-         if dep.name ~= "lua" then 
+         if not cfg.rocks_provided[dep.name] then
             matched[dep] = found
          end
       else
@@ -441,7 +444,7 @@ function fulfill_dependencies(rockspec, deps_mode)
       end
    end
 
-   local matched, missing, no_upgrade = match_deps(rockspec, nil, deps_mode)
+   local _, missing, no_upgrade = match_deps(rockspec, nil, deps_mode)
 
    if next(no_upgrade) then
       util.printerr("Missing dependencies for "..rockspec.name.." "..rockspec.version..":")
@@ -574,7 +577,19 @@ function check_external_deps(rockspec, mode)
                prefix = prefix.prefix
             end
             for dirname, dirdata in pairs(dirs) do
-               dirdata.dir = vars[name.."_"..dirname] or dir.path(prefix, dirdata.subdir)
+               local paths
+               local path_var_value = vars[name.."_"..dirname]
+               if path_var_value then
+                  paths = { path_var_value }
+               elseif type(dirdata.subdir) == "table" then
+                  paths = {}
+                  for i,v in ipairs(dirdata.subdir) do
+                     paths[i] = dir.path(prefix, v)
+                  end
+               else
+                  paths = { dir.path(prefix, dirdata.subdir) }
+               end
+               dirdata.dir = paths[1]
                local file = files[dirdata.testfile]
                if file then
                   local files = {}
@@ -596,16 +611,22 @@ function check_external_deps(rockspec, mode)
                      if f:match("%.so$") or f:match("%.dylib$") or f:match("%.dll$") then
                         f = f:gsub("%.[^.]+$", "."..cfg.external_lib_extension)
                      end
-                     if f:match("%*") then
-                        local replaced = f:gsub("%.", "%%."):gsub("%*", ".*")
-                        for _, entry in ipairs(fs.list_dir(dirdata.dir)) do
-                           if entry:match(replaced) then
-                              found = true
-                              break
+                     for _, d in ipairs(paths) do
+                        if f:match("%*") then
+                           local replaced = f:gsub("%.", "%%."):gsub("%*", ".*")
+                           for _, entry in ipairs(fs.list_dir(d)) do
+                              if entry:match(replaced) then
+                                 found = true
+                                 break
+                              end
                            end
+                        else
+                           found = fs.is_file(dir.path(d, f))
                         end
-                     else
-                        found = fs.is_file(dir.path(dirdata.dir, f))
+                        if found then
+                           dirdata.dir = d
+                           break
+                        end
                      end
                      if found then
                         break
@@ -668,7 +689,7 @@ function scan_deps(results, missing, manifest, name, version, deps_mode)
    local deplist = dependencies_name[version]
    local rockspec, err
    if not deplist then
-      rockspec, err = fetch.load_local_rockspec(path.rockspec_file(name, version))
+      rockspec, err = fetch.load_local_rockspec(path.rockspec_file(name, version), false)
       if err then
          missing[name.." "..version] = err
          return results, missing
@@ -678,6 +699,7 @@ function scan_deps(results, missing, manifest, name, version, deps_mode)
       rockspec = { dependencies = deplist }
    end
    local matched, failures = match_deps(rockspec, nil, deps_mode)
+   results[name] = results
    for _, match in pairs(matched) do
       results, missing = scan_deps(results, missing, manifest, match.name, match.version, deps_mode)
    end

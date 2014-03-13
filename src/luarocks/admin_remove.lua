@@ -13,10 +13,10 @@ local fs = require("luarocks.fs")
 local cache = require("luarocks.cache")
 
 help_summary = "Remove a rock or rockspec from a rocks server."
-help_arguments = "[--from=<server>] [--no-refresh] {<rockspec>|<rock>...}"
+help_arguments = "[--server=<server>] [--no-refresh] {<rockspec>|<rock>...}"
 help = [[
 Arguments are local files, which may be rockspecs or rocks.
-The flag --from indicates which server to use.
+The flag --server indicates which server to use.
 If not given, the default server set in the upload_server variable
 from the configuration file is used instead.
 The flag --no-refresh indicates the local cache should not be refreshed
@@ -41,14 +41,16 @@ local function remove_files_from_server(refresh, rockfiles, server, upload_serve
       return nil, "This command requires 'rsync', check your configuration."
    end
    
-   fs.change_dir(at)
+   local ok, err = fs.change_dir(at)
+   if not ok then return nil, err end
    
    local nr_files = 0
    for i, rockfile in ipairs(rockfiles) do
       local basename = dir.base_name(rockfile)
       local file = dir.path(local_cache, basename)
       util.printout("Removing file "..file.."...")
-      if fs.delete(file) then
+      fs.delete(file)
+      if not fs.exists(file) then
          nr_files = nr_files + 1
       else
          util.printerr("Failed removing "..file)
@@ -58,7 +60,8 @@ local function remove_files_from_server(refresh, rockfiles, server, upload_serve
       return nil, "No files removed."
    end
 
-   fs.change_dir(local_cache)
+   local ok, err = fs.change_dir(local_cache)
+   if not ok then return nil, err end
 
    util.printout("Updating manifest...")
    manif.make_manifest(local_cache, "one", true)
@@ -66,7 +69,7 @@ local function remove_files_from_server(refresh, rockfiles, server, upload_serve
    index.make_index(local_cache)
 
    local srv, path = server_path:match("([^/]+)(/.+)")
-   local cmd = "rsync -Oavz --delete -e ssh "..local_cache.."/ "..user.."@"..srv..":"..path.."/"
+   local cmd = cfg.variables.RSYNC.." "..cfg.variables.RSYNCFLAGS.." --delete -e ssh "..local_cache.."/ "..user.."@"..srv..":"..path.."/"
 
    util.printout(cmd)
    fs.execute(cmd)

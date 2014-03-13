@@ -112,9 +112,15 @@ function run(rockspec)
          def:write("luaopen_"..name:gsub("%.", "_").."\n")
          def:close()
          local ok = execute(variables.LD, "-dll", "-def:"..deffile, "-out:"..library, dir.path(variables.LUA_LIBDIR, variables.LUALIB), unpack(extras))
-         local manifestfile = basename..".dll.manifest"
+         local basedir = ""
+         if name:find("%.") ~= nil then
+            basedir = name:gsub("%.%w+$", "\\")
+            basedir = basedir:gsub("%.", "\\")
+         end
+         local manifestfile = basedir .. basename..".dll.manifest"
+
          if ok and fs.exists(manifestfile) then
-            ok = execute(variables.MT, "-manifest", manifestfile, "-outputresource:"..basename..".dll;2")
+            ok = execute(variables.MT, "-manifest", manifestfile, "-outputresource:"..basedir..basename..".dll;2")
          end
          return ok
       end
@@ -196,10 +202,17 @@ function run(rockspec)
       if type(info) == "string" then
          local ext = info:match(".([^.]+)$")
          if ext == "lua" then
+            local filename = dir.base_name(info)
             if info:match("init%.lua$") and not name:match("%.init$") then
                moddir = path.module_to_path(name..".init")
+            else
+               local basename = name:match("([^.]+)$")
+               local baseinfo = filename:gsub("%.lua$", "")
+               if basename ~= baseinfo then
+                  filename = basename..".lua"
+               end
             end
-            local dest = dir.path(luadir, moddir)
+            local dest = dir.path(luadir, moddir, filename)
             built_modules[info] = dest
          else
             info = {info}
@@ -222,12 +235,13 @@ function run(rockspec)
             table.insert(objects, object)
          end
          if not ok then break end
-         local module_name = dir.path(moddir, name:match("([^.]*)$").."."..util.matchquote(cfg.lib_extension)):gsub("//", "/")
+         local module_name = name:match("([^.]*)$").."."..util.matchquote(cfg.lib_extension)
          if moddir ~= "" then
-            fs.make_dir(moddir)
+            module_name = dir.path(moddir, module_name)
+            local ok, err = fs.make_dir(moddir)
+            if not ok then return nil, err end
          end
-         local dest = dir.path(libdir, moddir)
-         built_modules[module_name] = dest
+         built_modules[module_name] = dir.path(libdir, module_name)
          ok = compile_library(module_name, objects, info.libraries, info.libdirs, name)
          if not ok then
             return nil, "Failed compiling module "..module_name
@@ -235,15 +249,15 @@ function run(rockspec)
       end
    end
    for name, dest in pairs(built_modules) do
-      fs.make_dir(dest)
+      fs.make_dir(dir.dir_name(dest))
       ok = fs.copy(name, dest)
       if not ok then
          return nil, "Failed installing "..name.." in "..dest
       end
    end
    if fs.is_dir("lua") then
-      ok, err = fs.copy_contents("lua", luadir)
-      if not ok then 
+      local ok, err = fs.copy_contents("lua", luadir)
+      if not ok then
          return nil, "Failed copying contents of 'lua' directory: "..err
       end
    end

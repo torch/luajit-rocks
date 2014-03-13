@@ -39,7 +39,7 @@ function Q(arg)
    assert(type(arg) == "string")
 
    -- FIXME Unix-specific
-   return "'" .. arg:gsub("\\", "\\\\"):gsub("'", "'\\''") .. "'"
+   return "'" .. arg:gsub("'", "'\\''") .. "'"
 end
 
 --- Test is file/dir is writable.
@@ -69,17 +69,27 @@ end
 --- Create a temporary directory.
 -- @param name string: name pattern to use for avoiding conflicts
 -- when creating temporary directory.
--- @return string or nil: name of temporary directory or nil on failure.
+-- @return string or (nil, string): name of temporary directory or (nil, error message) on failure.
 function make_temp_dir(name)
    assert(type(name) == "string")
    name = dir.normalize(name)
 
    local temp_dir = (os.getenv("TMP") or "/tmp") .. "/luarocks_" .. name:gsub(dir.separator, "_") .. "-" .. tostring(math.floor(math.random() * 10000))
-   if fs.make_dir(temp_dir) then
+   local ok, err = fs.make_dir(temp_dir)
+   if ok then
       return temp_dir
    else
-      return nil
+      return nil, err
    end
+end
+
+local function quote_args(command, ...)
+   local out = { command }
+   for _, arg in ipairs({...}) do
+      assert(type(arg) == "string")
+      out[#out+1] = fs.Q(arg)
+   end
+   return table.concat(out, " ")
 end
 
 --- Run the given command, quoting its arguments.
@@ -91,29 +101,41 @@ end
 -- otherwise.
 function execute(command, ...)
    assert(type(command) == "string")
+   return fs.execute_string(quote_args(command, ...))
+end
 
-   for _, arg in ipairs({...}) do
-      assert(type(arg) == "string")
-      command = command .. " " .. fs.Q(arg)
+--- Run the given command, quoting its arguments, silencing its output.
+-- The command is executed in the current directory in the dir stack.
+-- Silencing is omitted if 'verbose' mode is enabled.
+-- @param command string: The command to be executed. No quoting/escaping
+-- is applied.
+-- @param ... Strings containing additional arguments, which will be quoted.
+-- @return boolean: true if command succeeds (status code 0), false
+-- otherwise.
+function execute_quiet(command, ...)
+   assert(type(command) == "string")
+   if cfg.verbose then -- omit silencing output
+      return fs.execute_string(quote_args(command, ...))
+   else
+      return fs.execute_string(fs.quiet(quote_args(command, ...)))
    end
-   return fs.execute_string(command)
 end
 
 --- Check the MD5 checksum for a file.
 -- @param file string: The file to be checked.
 -- @param md5sum string: The string with the expected MD5 checksum.
--- @return boolean: true if the MD5 checksum for 'file' equals 'md5sum', false if not
+-- @return boolean: true if the MD5 checksum for 'file' equals 'md5sum', false + msg if not
 -- or if it could not perform the check for any reason.
 function check_md5(file, md5sum)
    file = dir.normalize(file)
-   local computed = fs.get_md5(file)
+   local computed, msg = fs.get_md5(file)
    if not computed then
-      return false
+      return false, msg
    end
    if computed:match("^"..md5sum) then
       return true
    else
-      return false
+      return false, "Mismatch MD5 hash for file "..file
    end
 end
 
@@ -129,13 +151,8 @@ if lfs_ok then
 -- @return boolean: true if command succeeds (status code 0), false
 -- otherwise.
 function execute_string(cmd)
-   if cfg.verbose then print("Executing: "..cmd) end
    local code = os.execute(cmd)
-   if code == 0 or code == true then
-      return true
-   else
-      return false
-   end
+   return (code == 0 or code == true)
 end
 
 --- Obtain current directory.
@@ -153,7 +170,7 @@ end
 function change_dir(d)
    table.insert(dir_stack, lfs.currentdir())
    d = dir.normalize(d)
-   lfs.chdir(d)
+   return lfs.chdir(d)
 end
 
 --- Change directory to root.
@@ -177,10 +194,10 @@ function pop_dir()
 end
 
 --- Create a directory if it does not already exist.
--- If any of the higher levels in the path name does not exist
+-- If any of the higher levels in the path name do not exist
 -- too, they are created as well.
 -- @param directory string: pathname of directory to create.
--- @return boolean: true on success, false on failure.
+-- @return boolean or (boolean, string): true on success or (false, error message) on failure.
 function make_dir(directory)
    assert(type(directory) == "string")
    directory = dir.normalize(directory)
@@ -197,11 +214,12 @@ function make_dir(directory)
       path = path and path .. dir.separator .. d or d
       local mode = lfs.attributes(path, "mode")
       if not mode then
-         if not lfs.mkdir(path) then
-            return false
+         local ok, err = lfs.mkdir(path)
+         if not ok then
+            return false, err
          end
       elseif mode ~= "directory" then
-         return false
+         return false, path.." is not a directory"
       end
    end
    return true
@@ -274,7 +292,8 @@ local function recursive_copy(src, dest)
       if not ok then return false end
    elseif srcmode == "directory" then
       local subdir = dir.path(dest, dir.base_name(src))
-      fs.make_dir(subdir)
+      local ok, err = fs.make_dir(subdir)
+      if not ok then return nil, err end
       for file in lfs.dir(src) do
          if file ~= "." and file ~= ".." then
             local ok = recursive_copy(dir.path(src, file), subdir)
@@ -313,11 +332,9 @@ end
 -- @return boolean or (boolean, string): true on success,
 -- or nil and an error message on failure.
 local function recursive_delete(name)
-   local mode = lfs.attributes(name, "mode")
-
-   if mode == "file" then
-      return os.remove(name)
-   elseif mode == "directory" then
+   local ok = os.remove(name)
+   if ok then return true end
+   local pok, ok, err = pcall(function()
       for file in lfs.dir(name) do
          if file ~= "." and file ~= ".." then
             local ok, err = recursive_delete(dir.path(name, file))
@@ -325,17 +342,21 @@ local function recursive_delete(name)
          end
       end
       local ok, err = lfs.rmdir(name)
-      if not ok then return nil, err end
+      return ok, (not ok) and err
+   end)
+   if pok then
+      return ok, err
+   else
+      return pok, ok
    end
-   return true
 end
 
 --- Delete a file or a directory and all its contents.
 -- @param name string: Pathname of source
--- @return boolean: true on success, false on failure.
+-- @return nil
 function delete(name)
    name = dir.normalize(name)
-   return recursive_delete(name) or false
+   recursive_delete(name)
 end
 
 --- List the contents of a directory.
@@ -455,7 +476,8 @@ function unzip(zipfile)
    local file = files()
    repeat
       if file.filename:sub(#file.filename) == "/" then
-         fs.make_dir(dir.path(fs.current_dir(), file.filename))
+         local ok, err = fs.make_dir(dir.path(fs.current_dir(), file.filename))
+         if not ok then return nil, err end
       else
          local rf, err = zipfile:open(file.filename)
          if not rf then zipfile:close(); return nil, err end
@@ -482,12 +504,13 @@ if socket_ok then
 
 local ltn12 = require("ltn12")
 local luasec_ok, https = pcall(require, "ssl.https")
+
 local redirect_protocols = {
    http = http,
    https = luasec_ok and https,
 }
 
-local function http_request(url, http, loop_control)
+local function request(url, method, http, loop_control)
    local result = {}
    
    local proxy = cfg.proxy
@@ -497,15 +520,33 @@ local function http_request(url, http, loop_control)
       proxy = "http://" .. proxy
    end
    
+   if cfg.show_downloads then
+      io.write(method.." "..url.." ...\n")
+   end
+   local dots = 0
    local res, status, headers, err = http.request {
       url = url,
       proxy = proxy,
+      method = method,
       redirect = false,
       sink = ltn12.sink.table(result),
+      step = cfg.show_downloads and function(...)
+         io.write(".")
+         io.flush()
+         dots = dots + 1
+         if dots == 70 then
+            io.write("\n")
+            dots = 0
+         end
+         return ltn12.pump.step(...)
+      end,
       headers = {
          ["user-agent"] = cfg.user_agent.." via LuaSocket"
       },
    }
+   if cfg.show_downloads then
+      io.write("\n")
+   end
    if not res then
       return nil, status
    elseif status == 301 or status == 302 then
@@ -519,7 +560,7 @@ local function http_request(url, http, loop_control)
                return nil, "Redirection loop -- broken URL?"
             end
             loop_control[url] = true
-            return http_request(location, redirect_protocols[protocol], loop_control)
+            return request(location, method, redirect_protocols[protocol], loop_control)
          else
             return nil, "URL redirected to unsupported protocol - install luasec to get HTTPS support."
          end
@@ -528,7 +569,32 @@ local function http_request(url, http, loop_control)
    elseif status ~= 200 then
       return nil, err
    else
+      return result, status, headers, err
+   end
+end
+
+local function http_request(url, http, cached)
+   if cached then
+      local tsfd = io.open(cached..".timestamp", "r")
+      if tsfd then
+         local timestamp = tsfd:read("*a")
+         tsfd:close()
+         local result, status, headers, err = request(url, "HEAD", http)
+         if status == 200 and headers["last-modified"] == timestamp then
+            return true
+         end
+      end
+   end
+   local result, status, headers, err = request(url, "GET", http)
+   if result then
+      if cached and headers["last-modified"] then
+         local tsfd = io.open(cached..".timestamp", "w")
+         tsfd:write(headers["last-modified"])
+         tsfd:close()
+      end
       return table.concat(result)
+   else
+      return nil, status
    end
 end
 
@@ -538,26 +604,30 @@ end
 -- resulting local filename of the remote file as the basename of the URL;
 -- if that is not correct (due to a redirection, for example), the local
 -- filename can be given explicitly as this second argument.
--- @return boolean: true on success, false on failure.
-function download(url, filename)
+-- @return (boolean, string): true and the filename on success,
+-- false and the error message on failure.
+function download(url, filename, cache)
    assert(type(url) == "string")
    assert(type(filename) == "string" or not filename)
 
-   filename = dir.path(fs.current_dir(), filename or dir.base_name(url))
+   filename = fs.absolute_name(filename or dir.base_name(url))
    
    local content, err
    if util.starts_with(url, "http:") then
-      content, err = http_request(url, http)
+      content, err = http_request(url, http, cache and filename)
    elseif util.starts_with(url, "ftp:") then
       content, err = ftp.get(url)
    elseif util.starts_with(url, "https:") then
       if luasec_ok then
-         content, err = http_request(url, https)
+         content, err = http_request(url, https, cache and filename)
       else
          err = "Unsupported protocol - install luasec to get HTTPS support."
       end
    else
       err = "Unsupported protocol"
+   end
+   if cache and content == true then
+      return true, filename
    end
    if not content then
       return false, tostring(err)
@@ -566,7 +636,7 @@ function download(url, filename)
    if not file then return false end
    file:write(content)
    file:close()
-   return true
+   return true, filename
 end
 
 end
@@ -578,14 +648,15 @@ if md5_ok then
 
 --- Get the MD5 checksum for a file.
 -- @param file string: The file to be computed.
--- @return string: The MD5 checksum
+-- @return string: The MD5 checksum or nil + error
 function get_md5(file)
    file = fs.absolute_name(file)
    local file = io.open(file, "rb")
-   if not file then return false end
+   if not file then return nil, "Failed to open file for reading: "..file end
    local computed = md5.sumhexa(file:read("*a"))
    file:close()
-   return computed
+   if computed then return computed end
+   return nil, "Failed to compute MD5 hash for file "..file
 end
 
 end
@@ -657,8 +728,8 @@ function move(src, dest)
    if not ok then
       return false, err
    end
-   ok = fs.delete(src)
-   if not ok then
+   fs.delete(src)
+   if fs.exists(src) then
       return false, "Failed move: could not delete "..src.." after copy."
    end
    return true
