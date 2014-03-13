@@ -33,10 +33,10 @@ IF(WIN32)
   INSTALL(FILES ${WINUTILS_DLL_FILES} DESTINATION "${INSTALL_BIN_SUBDIR}")
    
   SET(WINUTILS_EXE_FILES
-    win32/bin/7z.exe win32/bin/chmod.exe win32/bin/cp.exe
+    win32/bin/7z.exe win32/bin/cp.exe
     win32/bin/find.exe win32/bin/ls.exe win32/bin/md5sum.exe
-    win32/bin/mkdir.exe win32/bin/mv.exe win32/bin/objdump.exe
-    win32/bin/pwd.exe win32/bin/rm.exe win32/bin/rmdir.exe
+    win32/bin/mkdir.exe win32/bin/mv.exe
+    win32/bin/pwd.exe win32/bin/rmdir.exe
     win32/bin/test.exe win32/bin/uname.exe win32/bin/wget.exe)
   
   INSTALL(PROGRAMS ${WINUTILS_EXE_FILES} DESTINATION "${INSTALL_BIN_SUBDIR}")
@@ -87,7 +87,7 @@ SET(LUAROCKS_FILES
   add.lua deps.lua build.lua search.lua show.lua manif_core.lua fetch.lua
   unpack.lua validate.lua cfg.lua download.lua help.lua util.lua index.lua
   cache.lua refresh_cache.lua loader.lua admin_remove.lua fetch/hg.lua
-  fetch/git_file.lua new_version.lua lint.lua purge.lua)
+  fetch/git_file.lua new_version.lua lint.lua purge.lua doc.lua write_rockspec.lua)
 
 FOREACH(LUAROCKS_FILE ${LUAROCKS_FILES})
   GET_FILENAME_COMPONENT(_subpath "${LUAROCKS_FILE}" PATH)
