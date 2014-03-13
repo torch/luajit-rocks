@@ -45,7 +45,8 @@ local function add_files_to_server(refresh, rockfiles, server, upload_server)
       login_url = protocol.."://"..server_path
    end
    
-   fs.change_dir(at)
+   local ok, err = fs.change_dir(at)
+   if not ok then return nil, err end
    
    local files = {}
    for i, rockfile in ipairs(rockfiles) do
@@ -62,10 +63,14 @@ local function add_files_to_server(refresh, rockfiles, server, upload_server)
       return nil, "No files found"
    end
 
-   fs.change_dir(local_cache)
+   local ok, err = fs.change_dir(local_cache)
+   if not ok then return nil, err end
 
    util.printout("Updating manifest...")
    manif.make_manifest(local_cache, "one", true)
+   
+   manif.zip_manifests()
+   
    util.printout("Updating index.html...")
    index.make_index(local_cache)
 
@@ -78,15 +83,17 @@ local function add_files_to_server(refresh, rockfiles, server, upload_server)
 
    table.insert(files, "index.html")
    table.insert(files, "manifest")
-   table.insert(files, "manifest-5.1")
-   table.insert(files, "manifest-5.2")
+   for ver in util.lua_versions() do
+      table.insert(files, "manifest-"..ver)
+      table.insert(files, "manifest-"..ver..".zip")
+   end
 
    -- TODO abstract away explicit 'curl' call
 
    local cmd
    if protocol == "rsync" then
       local srv, path = server_path:match("([^/]+)(/.+)")
-      cmd = cfg.variables.RSYNC.." --exclude=.git -Oavz -e ssh "..local_cache.."/ "..user.."@"..srv..":"..path.."/"
+      cmd = cfg.variables.RSYNC.." "..cfg.variables.RSYNCFLAGS.." -e ssh "..local_cache.."/ "..user.."@"..srv..":"..path.."/"
    elseif upload_server and upload_server.sftp then
       local part1, part2 = upload_server.sftp:match("^([^/]*)/(.*)$")
       cmd = cfg.variables.SCP.." "..table.concat(files, " ").." "..user.."@"..part1..":/"..part2

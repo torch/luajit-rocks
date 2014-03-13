@@ -14,6 +14,7 @@ LUA_BINDIR="/usr/bin"
 LUA_INCDIR="/usr/include"
 LUA_LIBDIR="/usr/lib"
 LUA_VERSION="5.1"
+MULTIARCH_SUBDIR=""
 
 # ----------------------------------------------------------------------------
 # FUNCTION DEFINITIONS
@@ -270,14 +271,14 @@ if [ "$LUA_SUFFIX_SET" != "yes" ]
 then
    if [ "$LUA_VERSION_SET" = "yes" -a "$LUA_VERSION" = "5.1" ]
    then
-      suffixes="5.1 51"
+      suffixes="5.1 51 -5.1 -51"
    elif [ "$LUA_VERSION_SET" = "yes" -a "$LUA_VERSION" = "5.2" ]
    then
-      suffixes="5.2 52"
+      suffixes="5.2 52 -5.2 -52"
    else
-      suffixes="5.2 52 5.1 51"
+      suffixes="5.2 52 -5.2 -52 5.1 51 -5.1 -51"
    fi
-   for suffix in "" `echo $suffixes` ""
+   for suffix in `echo $suffixes` ""
    do
       search_interpreter "$suffix" && break
    done
@@ -285,9 +286,9 @@ fi
 
 if [ "$LUA_DIR_SET" != "yes" ]
 then
-   echo_n "Looking for Lua... "
-   if [ ! -n "$find_lua" ]
+   if [ -n "$find_lua" ]
    then
+      echo_n "Looking for Lua... "
       find_lua=`find_program lua$LUA_SUFFIX`
    fi
 
@@ -396,6 +397,15 @@ else
    echo "Using unversioned rocks dir: $PREFIX$LUAROCKS_ROCKS_SUBDIR"
 fi
 
+if [ "$LUAROCKS_UNAME_S" = Linux ]
+then
+   GCC_ARCH=`gcc -print-multiarch 2>/dev/null`
+   if [ -n "$GCC_ARCH" -a -d "/usr/lib/$GCC_ARCH" ]
+   then
+      MULTIARCH_SUBDIR="lib/$GCC_ARCH"
+   fi
+fi
+
 if [ -f config.unix ]; then
    rm -f config.unix
 fi
@@ -426,6 +436,7 @@ LUAROCKS_UNAME_S=$LUAROCKS_UNAME_S
 LUAROCKS_DOWNLOADER=$LUAROCKS_DOWNLOADER
 LUAROCKS_MD5CHECKER=$LUAROCKS_MD5CHECKER
 LUAROCKS_ROCKS_SUBDIR=$LUAROCKS_ROCKS_SUBDIR
+MULTIARCH_SUBDIR=$MULTIARCH_SUBDIR
 
 EOF
 

@@ -30,9 +30,25 @@ end
 
 _M.site_config = site_config
 
-program_version = "2.1.0"
+program_version = "2.1.2"
+major_version = program_version:match("([^.]%.[^.])")
 
 local persist = require("luarocks.persist")
+
+_M.errorcodes = setmetatable({
+   OK = 0,
+   UNSPECIFIED = 1,
+   PERMISSIONDENIED = 2,
+},{
+   __index = function(t, key)
+      local val = rawget(t, key)
+      if not val then
+         error("'"..tostring(key).."' is not a valid errorcode", 2)
+      end
+      return val
+   end
+})
+
 
 local popen_ok, popen_result = pcall(io.popen, "")
 if popen_ok then
@@ -42,7 +58,7 @@ if popen_ok then
 else
    io.stderr:write("Your version of Lua does not support io.popen,\n")
    io.stderr:write("which is required by LuaRocks. Please check your Lua installation.\n")
-   os.exit(1)
+   os.exit(_M.errorcodes.UNSPECIFIED)
 end
 
 -- System detection:
@@ -105,6 +121,7 @@ end
 local sys_config_file, home_config_file
 local sys_config_dir, home_config_dir
 local sys_config_ok, home_config_ok = false, false
+local extra_luarocks_module_dir
 sys_config_dir = site_config.LUAROCKS_SYSCONFDIR
 if detected.windows then
    home = os.getenv("APPDATA") or "c:"
@@ -166,10 +183,10 @@ end
 
 if not next(rocks_trees) then
    if home_tree then
-      table.insert(rocks_trees, home_tree)
+      table.insert(rocks_trees, { name = "user", root = home_tree } )
    end
    if site_config.LUAROCKS_ROCKS_TREE then
-      table.insert(rocks_trees, site_config.LUAROCKS_ROCKS_TREE)
+      table.insert(rocks_trees, { name = "system", root = site_config.LUAROCKS_ROCKS_TREE } )
    end
 end
 
@@ -249,22 +266,28 @@ local defaults = {
       CMAKE = "cmake",
       SEVENZ = "7z",
 
+      RSYNCFLAGS = "--exclude=.git -Ocavz",
       STATFLAG = "-c '%a'",
    },
 
-   external_deps_subdirs = {
+   external_deps_subdirs = site_config.LUAROCKS_EXTERNAL_DEPS_SUBDIRS or {
       bin = "bin",
       lib = "lib",
       include = "include"
    },
-   runtime_external_deps_subdirs = {
+   runtime_external_deps_subdirs = site_config.LUAROCKS_RUNTIME_EXTERNAL_DEPS_SUBDIRS or {
       bin = "bin",
       lib = "lib",
       include = "include"
    },
+
+   rocks_provided = {}
 }
 
 if detected.windows then
+   local full_prefix = site_config.LUAROCKS_PREFIX.."\\"..major_version
+   extra_luarocks_module_dir = full_prefix.."\\lua\\?.lua"
+
    home_config_file = home_config_file and home_config_file:gsub("\\","/")
    defaults.fs_use_modules = false
    defaults.arch = "win32-"..proc
@@ -281,13 +304,22 @@ if detected.windows then
    defaults.variables.MAKE = "nmake"
    defaults.variables.CC = "cl"
    defaults.variables.RC = "rc"
-   defaults.variables.WRAPPER = site_config.LUAROCKS_PREFIX .. "\\2.0\\rclauncher.c"
+   defaults.variables.WRAPPER = full_prefix.."\\rclauncher.c"
    defaults.variables.LD = "link"
    defaults.variables.MT = "mt"
    defaults.variables.LUALIB = "lua"..lua_version..".lib"
    defaults.variables.CFLAGS = "/MD /O2"
    defaults.variables.LIBFLAG = "/dll"
    defaults.variables.LUALIB = "lua"..lua_version..".lib"
+
+   local bins = { "SEVENZ", "CP", "FIND", "LS", "MD5SUM",
+      "MKDIR", "MV", "PWD", "RMDIR", "TEST", "UNAME", "WGET" }
+   for _, var in ipairs(bins) do
+      if defaults.variables[var] then
+         defaults.variables[var] = full_prefix.."\\bin\\"..defaults.variables[var]
+      end
+   end
+
    defaults.external_deps_patterns = {
       bin = { "?.exe", "?.bat" },
       lib = { "?.lib", "?.dll", "lib?.dll" },
@@ -302,7 +334,15 @@ if detected.windows then
    defaults.export_path_separator = ";"
    defaults.export_lua_path = "SET LUA_PATH=%s"
    defaults.export_lua_cpath = "SET LUA_CPATH=%s"
-   defaults.local_cache = home.."/cache/luarocks"
+   defaults.wrapper_suffix = ".bat"
+
+   local localappdata = os.getenv("LOCALAPPDATA")
+   if not localappdata then
+      -- for Windows versions below Vista
+      localappdata = os.getenv("USERPROFILE").."/Local Settings/Application Data"
+   end
+   defaults.local_cache = localappdata.."/LuaRocks/Cache"
+   defaults.web_browser = "start"
 end
 
 if detected.mingw32 then
@@ -312,10 +352,22 @@ if detected.mingw32 then
    defaults.variables.MAKE = "mingw32-make"
    defaults.variables.CC = "mingw32-gcc"
    defaults.variables.RC = "windres"
-   defaults.variables.WRAPPER = site_config.LUAROCKS_PREFIX .. "\\2.0\\rclauncher.c"
    defaults.variables.LD = "mingw32-gcc"
    defaults.variables.CFLAGS = "-O2"
    defaults.variables.LIBFLAG = "-shared"
+   defaults.external_deps_patterns = {
+      bin = { "?.exe", "?.bat" },
+      -- mingw lookup list from http://stackoverflow.com/a/15853231/1793220
+      -- ...should we keep ?.lib at the end? It's not in the above list.
+      lib = { "lib?.dll.a", "?.dll.a", "lib?.a", "cyg?.dll", "lib?.dll", "?.dll", "?.lib" },
+      include = { "?.h" }
+   }
+   defaults.runtime_external_deps_patterns = {
+      bin = { "?.exe", "?.bat" },
+      lib = { "cyg?.dll", "?.dll", "lib?.dll" },
+      include = { "?.h" }
+   }
+
 end
 
 if detected.unix then
@@ -347,10 +399,12 @@ if detected.unix then
    defaults.export_path_separator = ":"
    defaults.export_lua_path = "export LUA_PATH='%s'"
    defaults.export_lua_cpath = "export LUA_CPATH='%s'"
+   defaults.wrapper_suffix = ""
    defaults.local_cache = home.."/.cache/luarocks"
    if not defaults.variables.CFLAGS:match("-fPIC") then
       defaults.variables.CFLAGS = defaults.variables.CFLAGS.." -fPIC"
    end
+   defaults.web_browser = "xdg-open"
 end
 
 if detected.cygwin then
@@ -384,6 +438,7 @@ if detected.macosx then
    end
    defaults.variables.CC = "export MACOSX_DEPLOYMENT_TARGET=10."..version.."; gcc"
    defaults.variables.LD = "export MACOSX_DEPLOYMENT_TARGET=10."..version.."; gcc"
+   defaults.web_browser = "open"
 end
 
 if detected.linux then
@@ -418,16 +473,33 @@ defaults.variables.OBJ_EXTENSION = defaults.obj_extension
 defaults.variables.LUAROCKS_PREFIX = site_config.LUAROCKS_PREFIX
 defaults.variables.LUA = site_config.LUA_DIR_SET and (defaults.variables.LUA_BINDIR.."/"..defaults.lua_interpreter) or defaults.lua_interpreter
 
+-- Add built-in modules to rocks_provided
+defaults.rocks_provided["lua"] = lua_version.."-1"
+
+if lua_version >= "5.2" then
+   -- Lua 5.2+
+   defaults.rocks_provided["bit32"] = lua_version.."-1"
+end
+
+if package.loaded.jit then
+   -- LuaJIT
+   local lj_version = package.loaded.jit.version:match("LuaJIT (.*)"):gsub("%-","")
+   --defaults.rocks_provided["luajit"] = lj_version.."-1"
+   defaults.rocks_provided["luabitop"] = lj_version.."-1"
+end
+
 -- Use defaults:
 
--- Populate values from 'defaults.variables' in 'variables' if they were not
--- already set by user.
-if not _M.variables then
-   _M.variables = {}
-end
-for k,v in pairs(defaults.variables) do
-   if not _M.variables[k] then
-      _M.variables[k] = v
+-- Populate some arrays with values from their 'defaults' counterparts
+-- if they were not already set by user.
+for _, entry in ipairs({"variables", "rocks_provided"}) do
+   if not _M[entry] then
+      _M[entry] = {}
+   end
+   for k,v in pairs(defaults[entry]) do
+      if not _M[entry][k] then
+         _M[entry][k] = v
+      end
    end
 end
 
@@ -444,7 +516,7 @@ local cfg_mt = {
 setmetatable(_M, cfg_mt)
 
 function package_paths()
-   local new_path, new_cpath = {}, {}
+   local new_path, new_cpath = { extra_luarocks_module_dir }, {}
    for _,tree in ipairs(rocks_trees) do
      if type(tree) == "string" then
         table.insert(new_path, 1, tree..lua_modules_path.."/?.lua;"..tree..lua_modules_path.."/?/init.lua")
@@ -456,12 +528,6 @@ function package_paths()
      end
    end
    return table.concat(new_path, ";"), table.concat(new_cpath, ";")
-end
-
-do
-   local new_path, new_cpath = package_paths()
-   package.path = new_path..";"..package.path
-   package.cpath = new_cpath..";"..package.cpath
 end
 
 function which_config()

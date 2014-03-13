@@ -139,14 +139,15 @@ function disk_search(repo, query, results)
    for _, name in pairs(fs.list_dir(repo)) do
       local pathname = dir.path(repo, name)
       local rname, rversion, rarch = path.parse_name(name)
-      if fs.is_dir(pathname) then
+
+      if rname and (pathname:match(".rockspec$") or pathname:match(".rock$")) then
+         store_if_match(results, repo, rname, rversion, rarch, query)
+      elseif fs.is_dir(pathname) then
          for _, version in pairs(fs.list_dir(pathname)) do
             if version:match("-%d+$") then
                store_if_match(results, repo, name, version, "installed", query)
             end
          end
-      elseif rname then
-         store_if_match(results, repo, rname, rversion, rarch, query)
       end
    end
    return results
@@ -208,6 +209,12 @@ function search_repos(query)
             util.warning("Failed searching manifest: "..err)
          end
       end
+   end
+   -- search through rocks in cfg.rocks_provided
+   local provided_repo = "provided by VM or rocks_provided"
+   local name, versions
+   for name, versions in pairs(cfg.rocks_provided) do
+      store_if_match(results, provided_repo, name, versions, "installed", query)
    end
    return results
 end
@@ -273,6 +280,12 @@ function find_suitable_rock(query)
    if not first then
       return nil, "No results matching query were found."
    elseif not next(results, first) then
+      if cfg.rocks_provided[query.name] ~= nil then
+         -- do not install versions that listed in cfg.rocks_provided
+         return nil, "Rock "..query.name..
+                     " "..cfg.rocks_provided[query.name]..
+                     " was found but it is provided by VM or 'rocks_provided' in the config file."
+      end
       return pick_latest_version(query.name, results[first])
    else
       return results
@@ -293,6 +306,7 @@ function print_results(results, porcelain)
       end
       for version, repos in util.sortedpairs(versions, deps.compare_versions) do
          for _, repo in ipairs(repos) do
+            repo.repo = dir.normalize(repo.repo)
             if porcelain then
                util.printout(package, version, repo.arch, repo.repo)
             else

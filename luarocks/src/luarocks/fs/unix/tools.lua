@@ -48,7 +48,11 @@ end
 -- @param directory string: The directory to switch to.
 function change_dir(directory)
    assert(type(directory) == "string")
-   table.insert(dir_stack, directory)
+   if fs.is_dir(directory) then
+      table.insert(dir_stack, directory)
+      return true
+   end
+   return nil, "directory not found: "..directory
 end
 
 --- Change directory to root.
@@ -71,7 +75,11 @@ end
 -- @return boolean: true on success, false on failure.
 function make_dir(directory)
    assert(directory)
-   return fs.execute(vars.MKDIR.." -p", directory)
+   local ok, err = fs.execute(vars.MKDIR.." -p", directory)
+   if not ok then
+      err = "failed making directory "..directory
+   end
+   return ok, err
 end
 
 --- Remove a directory if it is empty.
@@ -80,7 +88,7 @@ end
 -- @param directory string: pathname of directory to remove.
 function remove_dir_if_empty(directory)
    assert(directory)
-   fs.execute_string(fs.quiet(vars.RMDIR.." "..fs.Q(directory)))
+   fs.execute_quiet(vars.RMDIR, directory)
 end
 
 --- Remove a directory if it is empty.
@@ -89,7 +97,7 @@ end
 -- @param directory string: pathname of directory to remove.
 function remove_dir_tree_if_empty(directory)
    assert(directory)
-   fs.execute_string(fs.quiet(vars.RMDIR.." -p "..fs.Q(directory)))
+   fs.execute_quiet(vars.RMDIR, "-p", directory)
 end
 
 --- Copy a file.
@@ -124,7 +132,7 @@ end
 -- plus an error message.
 function copy_contents(src, dest)
    assert(src and dest)
-   if fs.execute_string(fs.quiet(vars.CP.." -pPR "..fs.Q(src).."/* "..fs.Q(dest))) then
+   if fs.execute_quiet(vars.CP.." -pPR "..fs.Q(src).."/* "..fs.Q(dest)) then
       return true
    else
       return false, "Failed copying "..src.." to "..dest
@@ -133,11 +141,11 @@ end
 --- Delete a file or a directory and all its contents.
 -- For safety, this only accepts absolute paths.
 -- @param arg string: Pathname of source
--- @return boolean: true on success, false on failure.
+-- @return nil
 function delete(arg)
    assert(arg)
    assert(arg:sub(1,1) == "/")
-   return fs.execute_string(fs.quiet(vars.RM.." -rf " .. fs.Q(arg)))
+   fs.execute_quiet(vars.RM, "-rf", arg)
 end
 
 --- List the contents of a directory.
@@ -198,7 +206,7 @@ end
 -- @return boolean: true on success, false on failure.
 function unzip(zipfile)
    assert(zipfile)
-   return fs.execute(vars.UNZIP, zipfile)
+   return fs.execute_quiet(vars.UNZIP, zipfile)
 end
 
 --- Test is file/directory exists
@@ -231,21 +239,35 @@ end
 -- resulting local filename of the remote file as the basename of the URL;
 -- if that is not correct (due to a redirection, for example), the local
 -- filename can be given explicitly as this second argument.
--- @return boolean: true on success, false on failure.
-function download(url, filename)
+-- @return (boolean, string): true and the filename on success,
+-- false and the error message on failure.
+function download(url, filename, cache)
    assert(type(url) == "string")
    assert(type(filename) == "string" or not filename)
 
+   filename = fs.absolute_name(filename or dir.base_name(url))
+
+   local ok
    if cfg.downloader == "wget" then
-      local wget_cmd = vars.WGET.." --no-check-certificate --no-cache --user-agent='"..cfg.user_agent.." via wget' --quiet --continue "
-      if filename then
-         return fs.execute(wget_cmd.." --output-document ", filename, url)
+      local wget_cmd = vars.WGET.." --no-check-certificate --no-cache --user-agent='"..cfg.user_agent.." via wget' --quiet "
+      if cache then
+         -- --timestamping is incompatible with --output-document,
+         -- but that's not a problem for our use cases.
+         fs.change_dir(dir.dir_name(filename))
+         ok = fs.execute(wget_cmd.." --timestamping ", url)
+         fs.pop_dir()
+      elseif filename then
+         ok = fs.execute(wget_cmd.." --output-document "..fs.Q(filename), url)
       else
-         return fs.execute(wget_cmd, url)
+         ok = fs.execute(wget_cmd, url)
       end
    elseif cfg.downloader == "curl" then
-      filename = filename or dir.base_name(url)
-      return fs.execute_string(vars.CURL.." -L --user-agent '"..cfg.user_agent.." via curl' "..fs.Q(url).." 2> /dev/null 1> "..fs.Q(filename))
+      ok = fs.execute_string(vars.CURL.." -L --user-agent '"..cfg.user_agent.." via curl' "..fs.Q(url).." 2> /dev/null 1> "..fs.Q(filename))
+   end
+   if ok then
+      return true, filename
+   else
+      return false
    end
 end
 
@@ -302,12 +324,15 @@ local md5_cmd = {
 -- @return string: The MD5 checksum
 function get_md5(file)
    local cmd = md5_cmd[cfg.md5checker]
-   if not cmd then return nil end
+   if not cmd then return nil, "no MD5 checker command configured" end
    local pipe = io.popen(cmd.." "..fs.absolute_name(file))
    local computed = pipe:read("*a")
    pipe:close()
-   if not computed then return nil end
-   return computed:match("("..("%x"):rep(32)..")")
+   if computed then
+      computed = computed:match("("..("%x"):rep(32)..")")
+   end
+   if computed then return computed end
+   return nil, "Failed to compute MD5 hash for file "..tostring(fs.absolute_name(file))
 end
 
 function get_permissions(filename)
@@ -315,4 +340,8 @@ function get_permissions(filename)
    local ret = pipe:read("*l")
    pipe:close()
    return ret
+end
+
+function browser(url)
+   return fs.execute(cfg.web_browser, url)
 end

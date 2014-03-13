@@ -14,13 +14,16 @@ local manif = require("luarocks.manif")
 local fs = require("luarocks.fs")
 
 help_summary = "Uninstall a rock."
-help_arguments = "[--force] <name> [<version>]"
+help_arguments = "[--force[=fast]] <name> [<version>]"
 help = [[
 Argument is the name of a rock to be uninstalled.
 If a version is not given, try to remove all versions at once.
 Will only perform the removal if it does not break dependencies.
 To override this check and force the removal, use --force.
-]]
+To perform a forced removal without reporting dependency issues,
+use --force=fast.
+
+]]..util.deps_mode_help()
 
 --- Obtain a list of packages that depend on the given set of packages
 -- (where all packages of the set are versions of one program).
@@ -75,39 +78,43 @@ function remove_search_results(results, name, deps_mode, force)
    local version = next(versions)
    local second = next(versions, version)
    
-   util.printout("Checking stability of dependencies on the absence of")
-   util.printout(name.." "..table.concat(util.keys(versions), ", ").."...")
-   util.printout()
+   local dependents = {}
+   if force ~= "fast" then
+      util.printout("Checking stability of dependencies on the absence of")
+      util.printout(name.." "..table.concat(util.keys(versions), ", ").."...")
+      util.printout()
+      dependents = check_dependents(name, versions, deps_mode)
+   end
    
-   local dependents = check_dependents(name, versions, deps_mode)
-   
-   if #dependents == 0 or force then
-      if #dependents > 0 then
+   if #dependents > 0 then
+      if force then
          util.printerr("The following packages may be broken by this forced removal:")
          for _, dependent in ipairs(dependents) do
             util.printerr(dependent.name.." "..dependent.version)
          end
          util.printerr()
-      end
-      local ok, err = delete_versions(name, versions)
-      if not ok then return nil, err end
-      ok, err = manif.make_manifest(cfg.rocks_dir, deps_mode)
-      if not ok then return nil, err end
-   else
-      if not second then
-         util.printerr("Will not remove "..name.." "..version..".")
-         util.printerr("Removing it would break dependencies for: ")
       else
-         util.printerr("Will not remove installed versions of "..name..".")
-         util.printerr("Removing them would break dependencies for: ")
+         if not second then
+            util.printerr("Will not remove "..name.." "..version..".")
+            util.printerr("Removing it would break dependencies for: ")
+         else
+            util.printerr("Will not remove installed versions of "..name..".")
+            util.printerr("Removing them would break dependencies for: ")
+         end
+         for _, dependent in ipairs(dependents) do
+            util.printerr(dependent.name.." "..dependent.version)
+         end
+         util.printerr()
+         util.printerr("Use --force to force removal (warning: this may break modules).")
+         return nil, "Failed removing."
       end
-      for _, dependent in ipairs(dependents) do
-         util.printerr(dependent.name.." "..dependent.version)
-      end
-      util.printerr()
-      util.printerr("Use --force to force removal (warning: this may break modules).")
-      return nil, "Failed removing."
    end
+   
+   local ok, err = delete_versions(name, versions)
+   if not ok then return nil, err end
+   ok, err = manif.make_manifest(cfg.rocks_dir, deps_mode)
+   if not ok then return nil, err end
+
    util.printout("Removal successful.")
    return true
 end
@@ -126,8 +133,8 @@ end
 -- a specific version; otherwise, try to remove all versions.
 -- @param version string: When passing a package name, a version number
 -- may also be given.
--- @return boolean or (nil, string): True if removal was
--- successful, nil and an error message otherwise.
+-- @return boolean or (nil, string, exitcode): True if removal was
+-- successful, nil and an error message otherwise. exitcode is optionally returned.
 function run(...)
    local flags, name, version = util.parse_flags(...)
    
@@ -138,7 +145,7 @@ function run(...)
    local deps_mode = flags["deps-mode"] or cfg.deps_mode
    
    local ok, err = fs.check_command_permissions(flags)
-   if not ok then return nil, err end
+   if not ok then return nil, err, cfg.errorcodes.PERMISSIONDENIED end
    
    local rock_type = name:match("%.(rock)$") or name:match("%.(rockspec)$")
    local filename = name

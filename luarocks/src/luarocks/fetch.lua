@@ -11,6 +11,10 @@ local persist = require("luarocks.persist")
 local util = require("luarocks.util")
 local cfg = require("luarocks.cfg")
 
+function is_basic_protocol(protocol, remote)
+   return protocol == "http" or protocol == "https" or protocol == "ftp" or (not remote and protocol == "file")
+end
+
 --- Fetch a local or remote file.
 -- Make a remote or local URL/pathname local, fetching the file if necessary.
 -- Other "fetch" and "load" functions use this function to obtain files.
@@ -23,19 +27,19 @@ local cfg = require("luarocks.cfg")
 -- @return string or (nil, string, [string]): the absolute local pathname for the
 -- fetched file, or nil and a message in case of errors, followed by
 -- an optional error code.
-function fetch_url(url, filename)
+function fetch_url(url, filename, cache)
    assert(type(url) == "string")
    assert(type(filename) == "string" or not filename)
 
    local protocol, pathname = dir.split_url(url)
    if protocol == "file" then
       return fs.absolute_name(pathname)
-   elseif protocol == "http" or protocol == "ftp" or protocol == "https" then
-      local ok, err = fs.download(url, filename)
+   elseif is_basic_protocol(protocol, true) then
+      local ok, filename = fs.download(url, filename, cache)
       if not ok then
-         return nil, "Failed downloading "..url..(err and " - "..err or ""), "network"
+         return nil, "Failed downloading "..url..(filename and " - "..filename or ""), "network"
       end
-      return dir.path(fs.current_dir(), filename or dir.base_name(url))
+      return filename
    else
       return nil, "Unsupported protocol "..protocol
    end
@@ -66,12 +70,13 @@ function fetch_url_at_temp_dir(url, tmpname, filename)
          return nil, "File not found: "..pathname
       end
    else
-      local temp_dir = fs.make_temp_dir(tmpname)
+      local temp_dir, err = fs.make_temp_dir(tmpname)
       if not temp_dir then
-         return nil, "Failed creating temporary directory."
+         return nil, "Failed creating temporary directory "..tmpname..": "..err
       end
       util.schedule_function(fs.delete, temp_dir)
-      fs.change_dir(temp_dir)
+      local ok, err = fs.change_dir(temp_dir)
+      if not ok then return nil, err end
       local file, err, errcode = fetch_url(url, filename)
       fs.pop_dir()
       if not file then
@@ -104,15 +109,19 @@ function fetch_and_unpack_rock(rock_file, dest)
    local unpack_dir
    if dest then
       unpack_dir = dest
-      fs.make_dir(unpack_dir)
+      local ok, err = fs.make_dir(unpack_dir)
+      if not ok then
+         return nil, "Failed unpacking rock file: " .. err
+      end
    else
       unpack_dir = fs.make_temp_dir(name)
    end
    if not dest then
       util.schedule_function(fs.delete, unpack_dir)
    end
-   fs.change_dir(unpack_dir)
-   local ok = fs.unzip(rock_file)
+   local ok, err = fs.change_dir(unpack_dir)
+   if not ok then return nil, err end
+   ok = fs.unzip(rock_file)
    if not ok then
       return nil, "Failed unpacking rock file: " .. rock_file
    end
@@ -128,9 +137,11 @@ end
 --- Back-end function that actually loads the local rockspec.
 -- Performs some validation and postprocessing of the rockspec contents.
 -- @param filename string: The local filename of the rockspec file.
+-- @param quick boolean: if true, skips some steps when loading
+-- rockspec.
 -- @return table or (nil, string): A table representing the rockspec
 -- or nil followed by an error message.
-function load_local_rockspec(filename)
+function load_local_rockspec(filename, quick)
    assert(type(filename) == "string")
    filename = fs.absolute_name(filename)
    local rockspec, err = persist.load_into_table(filename)
@@ -138,9 +149,12 @@ function load_local_rockspec(filename)
       return nil, "Could not load rockspec file "..filename.." ("..err..")"
    end
 
-   local ok, err = type_check.type_check_rockspec(rockspec)
-   if not ok then
-      return nil, filename..": "..err
+   local ok, err = true, nil
+   if not quick then
+      ok, err = type_check.type_check_rockspec(rockspec)
+      if not ok then
+         return nil, filename..": "..err
+      end
    end
    
    if rockspec.rockspec_format then
@@ -166,7 +180,7 @@ function load_local_rockspec(filename)
    end
 
    local protocol, pathname = dir.split_url(rockspec.source.url)
-   if protocol == "http" or protocol == "https" or protocol == "ftp" or protocol == "file" then
+   if is_basic_protocol(protocol) then
       rockspec.source.file = rockspec.source.file or dir.base_name(rockspec.source.url)
    end
    rockspec.source.protocol, rockspec.source.pathname = protocol, pathname
@@ -198,9 +212,8 @@ function load_local_rockspec(filename)
    else
       rockspec.dependencies = {}
    end
-   local ok, err = path.configure_paths(rockspec)
-   if err then
-      return nil, "Error verifying paths: "..err
+   if not quick then
+      path.configure_paths(rockspec)
    end
 
    return rockspec
@@ -224,14 +237,15 @@ function load_rockspec(filename, location)
       name = "rockspec"
    else
       name = basename:match("(.*)%.rockspec")
-      if not name and not basename == "rockspec" then
+      if not name then
          return nil, "Filename '"..filename.."' does not look like a rockspec."
       end
    end
    
    local err, errcode
    if location then
-      fs.change_dir(location)
+      local ok, err = fs.change_dir(location)
+      if not ok then return nil, err end
       filename, err = fetch_url(filename)
       fs.pop_dir()
    else
@@ -248,7 +262,8 @@ end
 -- @param rockspec table: The rockspec table
 -- @param extract boolean: Whether to extract the sources from
 -- the fetched source tarball or not.
--- @param dest_dir string or nil: If set, will extract to the given directory.
+-- @param dest_dir string or nil: If set, will extract to the given directory;
+-- if not given, will extract to a temporary directory.
 -- @return (string, string) or (nil, string, [string]): The absolute pathname of
 -- the fetched source tarball and the temporary directory created to
 -- store it; or nil and an error message and optional error code.
@@ -262,7 +277,8 @@ function get_sources(rockspec, extract, dest_dir)
    local filename = rockspec.source.file
    local source_file, store_dir, err, errcode
    if dest_dir then
-      fs.change_dir(dest_dir)
+      local ok, err = fs.change_dir(dest_dir)
+      if not ok then return nil, err, "dest_dir" end
       source_file, err, errcode = fetch_url(url, filename)
       fs.pop_dir()
       store_dir = dest_dir
@@ -274,14 +290,15 @@ function get_sources(rockspec, extract, dest_dir)
    end
    if rockspec.source.md5 then
       if not fs.check_md5(source_file, rockspec.source.md5) then
-         return nil, "MD5 check for "..filename.." has failed."
+         return nil, "MD5 check for "..filename.." has failed.", "md5"
       end
    end
    if extract then
-      fs.change_dir(store_dir)
+      local ok, err = fs.change_dir(store_dir)
+      if not ok then return nil, err end
       fs.unpack_archive(rockspec.source.file)
       if not fs.exists(rockspec.source.dir) then
-         return nil, "Directory "..rockspec.source.dir.." not found inside archive "..rockspec.source.file
+         return nil, "Directory "..rockspec.source.dir.." not found inside archive "..rockspec.source.file, "source.dir", source_file, store_dir
       end
       fs.pop_dir()
    end
@@ -293,6 +310,7 @@ end
 -- @param extract boolean: When downloading compressed formats, whether to extract
 -- the sources from the fetched archive or not.
 -- @param dest_dir string or nil: If set, will extract to the given directory.
+-- if not given, will extract to a temporary directory.
 -- @return (string, string) or (nil, string): The absolute pathname of
 -- the fetched source tarball and the temporary directory created to
 -- store it; or nil and an error message.
@@ -303,7 +321,7 @@ function fetch_sources(rockspec, extract, dest_dir)
 
    local protocol = rockspec.source.protocol
    local ok, proto
-   if protocol == "http" or protocol == "https" or protocol == "ftp" or protocol == "file" then
+   if is_basic_protocol(protocol) then
       proto = require("luarocks.fetch")
    else
       ok, proto = pcall(require, "luarocks.fetch."..protocol:gsub("[+-]", "_"))

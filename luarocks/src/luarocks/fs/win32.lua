@@ -7,6 +7,16 @@ local fs = require("luarocks.fs")
 
 local cfg = require("luarocks.cfg")
 local dir = require("luarocks.dir")
+local util = require("luarocks.util")
+
+-- Monkey patch io.popen and os.execute to make sure quoting
+-- works as expected.
+-- See http://lua-users.org/lists/lua-l/2013-11/msg00367.html
+local _prefix = "type NUL && "
+local _popen, _execute = io.popen, os.execute
+io.popen = function(cmd, ...) return _popen(_prefix..cmd, ...) end
+os.execute = function(cmd, ...) return _execute(_prefix..cmd, ...) end
+
 
 --- Annotate command string for quiet execution.
 -- @param cmd string: A command-line string.
@@ -15,18 +25,59 @@ function quiet(cmd)
    return cmd.." 2> NUL 1> NUL"
 end
 
+
+local win_escape_chars = {
+  ["%"] = "%%",
+  ['"'] = '\\"',
+}
+
+local function q_escaper(bs, q)
+  return ("\\"):rep(2*#bs-1) .. (q or "\\")
+end
+
+local function p_escaper(bs)
+   return bs .. bs .. '"%"'
+end
+
 --- Quote argument for shell processing. Fixes paths on Windows.
--- Adds single quotes and escapes.
+-- Adds double quotes and escapes.
 -- @param arg string: Unquoted argument.
 -- @return string: Quoted argument.
 function Q(arg)
    assert(type(arg) == "string")
    -- Quote DIR for Windows
-    if arg:match("^[%.a-zA-Z]?:?[\\/]")  then
-        return '"' .. arg:gsub("/", "\\"):gsub('"', '\\"') .. '"'
-    end
+   if arg:match("^[%.a-zA-Z]?:?[\\/]")  then
+      arg = arg:gsub("/", "\\")
+   end
+   if arg == "\\" then
+      return '\\' -- CHDIR needs special handling for root dir
+   end
     -- URLs and anything else
-   return '"' .. arg:gsub('"', '\\"') .. '"'
+   arg = arg:gsub('(\\+)(")', q_escaper)
+   arg = arg:gsub('(\\+)$', q_escaper)
+   arg = arg:gsub('"', win_escape_chars)
+   arg = arg:gsub('(\\*)%%', p_escaper)
+   return '"' .. arg .. '"'
+end
+
+--- Quote argument for shell processing in batch files.
+-- Adds double quotes and escapes.
+-- @param arg string: Unquoted argument.
+-- @return string: Quoted argument.
+function Qb(arg)
+   assert(type(arg) == "string")
+   -- Quote DIR for Windows
+   if arg:match("^[%.a-zA-Z]?:?[\\/]")  then
+      arg = arg:gsub("/", "\\")
+   end
+   if arg == "\\" then
+      return '\\' -- CHDIR needs special handling for root dir
+   end
+   -- URLs and anything else
+   arg = arg:gsub('(\\+)(")', q_escaper)
+   arg = arg:gsub('(\\+)$', q_escaper)
+   arg = arg:gsub('[%%"]', win_escape_chars)
+   return '"' .. arg .. '"'
 end
 
 --- Return an absolute pathname from a potentially relative one.
@@ -63,16 +114,16 @@ function wrap_script(file, dest, name, version)
    local base = dir.base_name(file)
    local wrapname = fs.is_dir(dest) and dest.."/"..base or dest
    wrapname = wrapname..".bat"
+   local lpath, lcpath = cfg.package_paths()
    local wrapper = io.open(wrapname, "w")
    if not wrapper then
       return nil, "Could not open "..wrapname.." for writing."
    end
    wrapper:write("@echo off\n")
-   wrapper:write("setlocal\n")
-   wrapper:write('set LUA_PATH='..package.path..";%LUA_PATH%\n")
-   wrapper:write('set LUA_CPATH='..package.cpath..";%LUA_CPATH%\n")
-   wrapper:write('"'..dir.path(cfg.variables["LUA_BINDIR"], cfg.lua_interpreter)..'" -lluarocks.loader -e\'luarocks.loader.add_context([['..name..']],[['..version..']])\' "'..file..'" %*\n')
-   wrapper:write("endlocal\n")
+   local lua = dir.path(cfg.variables["LUA_BINDIR"], cfg.lua_interpreter)
+   local ppaths = "package.path="..util.LQ(lpath..";").."..package.path; package.cpath="..util.LQ(lcpath..";").."..package.cpath"
+   local addctx = "local k,l,_=pcall(require,"..util.LQ("luarocks.loader")..") _=k and l.add_context("..util.LQ(name)..","..util.LQ(version)..")"
+   wrapper:write(fs.Qb(lua)..' -e '..fs.Qb(ppaths)..' -e '..fs.Qb(addctx)..' '..fs.Qb(file)..' %*\n')
    wrapper:close()
    return true
 end
@@ -131,3 +182,33 @@ function replace_file(old_file, new_file)
    return os.rename(new_file, old_file)
 end
 
+--- Test is file/dir is writable.
+-- Warning: testing if a file/dir is writable does not guarantee
+-- that it will remain writable and therefore it is no replacement
+-- for checking the result of subsequent operations.
+-- @param file string: filename to test
+-- @return boolean: true if file exists, false otherwise.
+function is_writable(file)
+   assert(file)
+   file = dir.normalize(file)
+   local result
+   local tmpname = 'tmpluarockstestwritable.deleteme'
+   if fs.is_dir(file) then
+      local file2 = dir.path(file, tmpname)
+      local fh = io.open(file2, 'wb')
+      result = fh ~= nil
+      if fh then fh:close() end
+      if result then
+         -- the above test might give a false positive when writing to
+         -- c:\program files\ because of VirtualStore redirection on Vista and up
+         -- So check whether it's really there
+         result = fs.exists(file2)
+      end
+      os.remove(file2)
+   else
+      local fh = io.open(file, 'r+b')
+      result = fh ~= nil
+      if fh then fh:close() end
+   end
+   return result
+end

@@ -6,8 +6,8 @@
 -- used to load previous modules, so that the loader chooses versions
 -- that are declared to be compatible with the ones loaded earlier.
 local global_env = _G
-local package, require, ipairs, pairs, table, type, next, unpack =
-      package, require, ipairs, pairs, table, type, next, unpack
+local package, require, ipairs, pairs, table, type, next, unpack, tostring, error =
+      package, require, ipairs, pairs, table, type, next, unpack, tostring, error
 
 module("luarocks.loader")
 
@@ -108,7 +108,7 @@ end
 -- @return table or (nil, string): The module table as returned by some other loader,
 -- or nil followed by an error message if no other loader managed to load the module.
 local function call_other_loaders(module, name, version, module_name)
-   for i, loader in pairs(package.loaders) do
+   for i, loader in ipairs(package.loaders) do
       if loader ~= luarocks_loader then
          local results = { loader(module_name) }
          if type(results[1]) == "function" then
@@ -146,7 +146,7 @@ local function select_module(module, filter_module_name)
             local name, version = entry:match("^([^/]*)/(.*)$")
             local module_name = tree.manifest.repository[name][version][1].modules[module]
             if type(module_name) ~= "string" then
-               error("Invalid format in manifest file (invalid data for "..tostring(name).." "..tostring(version)..")")
+               error("Invalid data in manifest file for module "..tostring(module).." (invalid data for "..tostring(name).." "..tostring(version)..")")
             end
             module_name = filter_module_name(module_name, name, version, tree.tree, i)
             if context[name] == version then

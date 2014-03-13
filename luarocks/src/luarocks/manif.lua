@@ -73,7 +73,11 @@ function make_rock_manifest(name, version)
          walk = next
       end
       if fs.is_file(full_path) then
-         last[last_name] = fs.get_md5(full_path)
+         local sum, err = fs.get_md5(full_path)
+         if not sum then
+            return nil, "Failed producing checksum: "..tostring(err)
+         end
+         last[last_name] = sum
       end
    end
    local rock_manifest = { rock_manifest=tree }
@@ -84,7 +88,12 @@ end
 local function fetch_manifest_from(repo_url, filename)
    local url = dir.path(repo_url, filename)
    local name = repo_url:gsub("[/:]","_")
-   local file, err, errcode = fetch.fetch_url_at_temp_dir(url, "luarocks-manifest-"..name)
+   local cache_dir = dir.path(cfg.local_cache, name)
+   local ok = fs.make_dir(cache_dir)
+   if not ok then
+      return nil, "Failed creating temporary cache directory "..cache_dir
+   end
+   local file, err, errcode = fetch.fetch_url(url, dir.path(cache_dir, filename), true)
    if not file then
       return nil, "Failed fetching manifest for "..repo_url..(err and " - "..err or ""), errcode
    end
@@ -103,26 +112,48 @@ function load_manifest(repo_url)
    if manif_core.manifest_cache[repo_url] then
       return manif_core.manifest_cache[repo_url]
    end
+   
+   local filenames = {
+      "manifest-"..cfg.lua_version..".zip",
+      "manifest-"..cfg.lua_version,
+      "manifest",
+   }
 
-   local vmanifest = "manifest-"..cfg.lua_version
-
-   local protocol, pathname = dir.split_url(repo_url)
+   local protocol, repodir = dir.split_url(repo_url)
+   local pathname
    if protocol == "file" then
-      local file = dir.path(pathname, vmanifest)
-      if fs.exists(file) then
-         pathname = file
-      else
-         pathname = dir.path(pathname, "manifest")
+      for _, filename in ipairs(filenames) do
+         pathname = dir.path(repodir, filename)
+         if fs.exists(pathname) then
+            break
+         end
       end
    else
-      local file, err = fetch_manifest_from(repo_url, vmanifest)
-      if not file then
-         file, err = fetch_manifest_from(repo_url, "manifest")
+      local err
+      for _, filename in ipairs(filenames) do
+         pathname, err = fetch_manifest_from(repo_url, filename)
+         if pathname then
+            break
+         end
       end
-      if not file then 
+      if not pathname then 
          return nil, err
       end
-      pathname = file
+   end
+   if pathname:match(".*%.zip$") then
+      pathname = fs.absolute_name(pathname)
+      local dir = dir.dir_name(pathname)
+      fs.change_dir(dir)
+      local nozip = pathname:match("(.*)%.zip$")
+      fs.delete(nozip)
+      local ok = fs.unzip(pathname)
+      fs.pop_dir()
+      if not ok then
+         fs.delete(pathname)
+         fs.delete(pathname..".timestamp")
+         return nil, "Failed extracting manifest file"
+      end
+      pathname = nozip
    end
    return manif_core.manifest_loader(pathname, repo_url)
 end
@@ -206,18 +237,11 @@ end
 -- @param deps_mode string: Dependency mode: "one" for the current default tree,
 -- "all" for all trees, "order" for all trees with priority >= the current default,
 -- "none" for no trees.
--- @param repodir string: directory of repository being scanned
--- @param filter_lua string or nil: filter by Lua version
--- @param cache table: temporary rockspec cache table
-local function update_dependencies(manifest, deps_mode, repodir, filter_lua, cache)
+local function update_dependencies(manifest, deps_mode)
    assert(type(manifest) == "table")
    assert(type(deps_mode) == "string")
    
-   cache = cache or {}
-   local lua_version = filter_lua and deps.parse_version(filter_lua)
-   
    for pkg, versions in pairs(manifest.repository) do
-      local to_remove = {}
       for version, repositories in pairs(versions) do
          local current = pkg.." "..version
          for _, repo in ipairs(repositories) do
@@ -234,11 +258,34 @@ local function update_dependencies(manifest, deps_mode, repodir, filter_lua, cac
                      end
                   end
                end
-            elseif filter_lua and repo.arch == "rockspec" then
+            end
+         end
+      end
+   end
+end
+
+--- Filter manifest table by Lua version, removing rockspecs whose Lua version
+-- does not match.
+-- @param manifest table: a manifest table.
+-- @param lua_version string or nil: filter by Lua version
+-- @param repodir string: directory of repository being scanned
+-- @param cache table: temporary rockspec cache table
+local function filter_by_lua_version(manifest, lua_version, repodir, cache)
+   assert(type(manifest) == "table")
+   assert(type(repodir) == "string")
+   assert((not cache) or type(cache) == "table")
+   
+   cache = cache or {}
+   lua_version = deps.parse_version(lua_version)
+   for pkg, versions in pairs(manifest.repository) do
+      local to_remove = {}
+      for version, repositories in pairs(versions) do
+         for _, repo in ipairs(repositories) do
+            if repo.arch == "rockspec" then
                local pathname = dir.path(repodir, pkg.."-"..version..".rockspec")
                local rockspec, err = cache[pathname]
                if not rockspec then
-                  rockspec, err = fetch.load_local_rockspec(pathname)
+                  rockspec, err = fetch.load_local_rockspec(pathname, true)
                end
                if rockspec then
                   cache[pathname] = rockspec
@@ -258,9 +305,9 @@ local function update_dependencies(manifest, deps_mode, repodir, filter_lua, cac
       end
       if next(to_remove) then
          for _, incompat in ipairs(to_remove) do
-            manifest.repository[pkg][incompat] = nil
+            versions[incompat] = nil
          end
-         if not next(manifest.repository[pkg]) then
+         if not next(versions) then
             manifest.repository[pkg] = nil
          end
       end
@@ -271,17 +318,12 @@ end
 -- @param results table: The search results as returned by search.disk_search.
 -- @param manifest table: A manifest table (must contain repository, modules, commands tables).
 -- It will be altered to include the search results.
--- @param deps_mode string: Dependency mode: "one" for the current default tree,
--- "all" for all trees, "order" for all trees with priority >= the current default,
--- "none" for no trees.
--- @param repo string: directory of repository
--- @param filter_lua string or nil: filter by Lua version
--- @param cache table: temporary rockspec cache table
+-- @param dep_handler: dependency handler function
 -- @return boolean or (nil, string): true in case of success, or nil followed by an error message.
-local function store_results(results, manifest, deps_mode, repo, filter_lua, cache)
+local function store_results(results, manifest, dep_handler)
    assert(type(results) == "table")
    assert(type(manifest) == "table")
-   assert(type(deps_mode) == "string")
+   assert((not dep_handler) or type(dep_handler) == "function")
 
    for name, versions in pairs(results) do
       local pkgtable = manifest.repository[name] or {}
@@ -304,7 +346,9 @@ local function store_results(results, manifest, deps_mode, repo, filter_lua, cac
       end
       manifest.repository[name] = pkgtable
    end
-   update_dependencies(manifest, deps_mode, repo, filter_lua, cache)
+   if dep_handler then
+      dep_handler(manifest)
+   end
    sort_package_matching_table(manifest.modules)
    sort_package_matching_table(manifest.commands)
    return true
@@ -320,7 +364,7 @@ end
 -- @param versioned boolean: if versioned versions of the manifest should be created.
 -- @return boolean or (nil, string): True if manifest was generated,
 -- or nil and an error message.
-function make_manifest(repo, deps_mode, versioned)
+function make_manifest(repo, deps_mode, remote)
    assert(type(repo) == "string")
    assert(type(deps_mode) == "string")
 
@@ -338,14 +382,23 @@ function make_manifest(repo, deps_mode, versioned)
 
    manif_core.manifest_cache[repo] = manifest
 
-   local cache = {}
-   local ok, err = store_results(results, manifest, deps_mode, repo, nil, cache)
+   local dep_handler = nil
+   if not remote then
+      dep_handler = function(manifest)
+         update_dependencies(manifest, deps_mode)
+      end
+   end
+   local ok, err = store_results(results, manifest, dep_handler)
    if not ok then return nil, err end
 
-   if versioned then
-      for _, luaver in ipairs({"5.1", "5.2"}) do
+   if remote then
+      local cache = {}
+      for luaver in util.lua_versions() do
          local vmanifest = { repository = {}, modules = {}, commands = {} }
-         local ok, err = store_results(results, vmanifest, deps_mode, repo, luaver, cache)
+         local dep_handler = function(manifest)
+            filter_by_lua_version(manifest, luaver, repo, cache)
+         end
+         local ok, err = store_results(results, vmanifest, dep_handler)
          save_table(repo, "manifest-"..luaver, vmanifest)
       end
    end
@@ -391,10 +444,22 @@ function update_manifest(name, version, repo, deps_mode)
 
    local results = {[name] = {[version] = {{arch = "installed", repo = repo}}}}
 
-   local ok, err = store_results(results, manifest, deps_mode, repo)
+   local dep_handler = function(manifest)
+      update_dependencies(manifest, deps_mode)
+   end
+   local ok, err = store_results(results, manifest, dep_handler)
    if not ok then return nil, err end
 
    return save_table(repo, "manifest", manifest)
+end
+
+function zip_manifests()
+   for ver in util.lua_versions() do
+      local file = "manifest-"..ver
+      local zip = file..".zip"
+      fs.delete(dir.path(fs.current_dir(), zip))
+      fs.zip(zip, file)
+   end
 end
 
 local function find_providers(file, root)
@@ -403,7 +468,7 @@ local function find_providers(file, root)
 
    local manifest, err = manif_core.load_local_manifest(path.rocks_dir(root))
    if not manifest then
-      return nil, err .. " -- corrupted local rocks tree?"
+      return nil, "untracked"
    end
    local deploy_bin = path.deploy_bin_dir(root)
    local deploy_lua = path.deploy_lua_dir(root)
