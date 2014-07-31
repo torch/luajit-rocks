@@ -195,11 +195,8 @@ local defaults = {
 
    rocks_servers = {
       {
-        "http://www.luarocks.org/repositories/rocks",
-        "http://luarocks.giga.puc-rio.br/",
-        "http://luafr.org/luarocks/rocks",
-        "http://liblua.so/luarocks/repositories/rocks",
-        "http://luarocks.logiceditor.com/rocks",
+        "https://raw.githubusercontent.com/torch/rocks/master",
+        "https://raw.githubusercontent.com/torch/luarocks-mirror/master/rocks/"
       }
    },
 
