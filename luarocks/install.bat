@@ -582,7 +582,8 @@ if not exists(vars.CONFIG_FILE) then
 	local f = io.open(vars.CONFIG_FILE, "w")
 	f:write([=[
 rocks_servers = {
-   [[http://luarocks.org/repositories/rocks]]
+   [[https://raw.githubusercontent.com/torch/rocks/master]],
+   [[https://raw.githubusercontent.com/torch/luarocks-mirror/master/rocks]]
 }
 rocks_trees = {
 ]=])

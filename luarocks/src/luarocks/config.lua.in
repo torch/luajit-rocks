@@ -12,6 +12,6 @@ rocks_trees = {
 }
 
 rocks_servers = {
-   [[https://raw.github.com/torch/rocks/master]],
-   [[http://luarocks.org/repositories/rocks]]
+   [[https://raw.githubusercontent.com/torch/rocks/master]],
+   [[https://raw.githubusercontent.com/torch/luarocks-mirror/master/rocks]]
 }
