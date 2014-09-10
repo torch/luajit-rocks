@@ -11,6 +11,19 @@
 #include <limits.h>
 #include <stddef.h>
 
+#cmakedefine LUA_USE_ULONGJMP 1
+#cmakedefine LUA_USE_DLOPEN 1
+#cmakedefine LUA_USE_ISATTY 1
+#cmakedefine LUA_USE_MKSTEMP 1
+#cmakedefine LUA_USE_POPEN 1
+#cmakedefine LUA_USE_GMTIME_R 1
+#cmakedefine LUA_USE_POSIX 1
+#cmakedefine LUA_USE_READLINE 1
+#cmakedefine LUA_BUILD_AS_DLL 1
+#cmakedefine LUA_USE_AFORMAT 1
+#cmakedefine LUA_USE_STRTODHEX 1
+#cmakedefine LUA_USE_LONGLONG 1
+#define LUA_ROOT "@LUA_ROOT@/"
 
 /*
 ** ==================================================================
@@ -100,7 +113,7 @@
 #else			/* }{ */
 
 #define LUA_VDIR	LUA_VERSION_MAJOR "." LUA_VERSION_MINOR "/"
-#define LUA_ROOT	"/usr/local/"
+/* #define LUA_ROOT	"/usr/local/" */
 #define LUA_LDIR	LUA_ROOT "share/lua/" LUA_VDIR
 #define LUA_CDIR	LUA_ROOT "lib/lua/" LUA_VDIR
 #define LUA_PATH_DEFAULT  \
