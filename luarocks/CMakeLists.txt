@@ -47,7 +47,7 @@ IF(WIN32)
   SET(SHEBANG
 "rem=rem --[[
 @setlocal&  set PATH=${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_SUBDIR};%PATH% & set luafile=\"%~f0\" & if exist \"%~f0.bat\" set luafile=\"%~f0.bat\"
-@${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_SUBDIR}/luajit.exe %luafile% %*&  exit /b ]]")
+@${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_SUBDIR}/${LUA_EXE_NAME}.exe %luafile% %*&  exit /b ]]")
 
 ELSE()
   FIND_PACKAGE(Wget)
@@ -73,7 +73,7 @@ ELSE()
     SET(UNAME_M ${CMAKE_SYSTEM_PROCESSOR})
   ENDIF()
 
-  SET(SHEBANG "#!${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_SUBDIR}/luajit")
+  SET(SHEBANG "#!${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_SUBDIR}/${LUA_EXE_NAME}")
 
 ENDIF()
 
