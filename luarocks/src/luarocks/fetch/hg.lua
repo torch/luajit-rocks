@@ -1,6 +1,9 @@
 
 --- Fetch back-end for retrieving sources from HG.
-module("luarocks.fetch.hg", package.seeall)
+--module("luarocks.fetch.hg", package.seeall)
+local hg = {}
+
+local unpack = unpack or table.unpack
 
 local fs = require("luarocks.fs")
 local dir = require("luarocks.dir")
@@ -13,7 +16,7 @@ local util = require("luarocks.util")
 -- @return (string, string) or (nil, string): The absolute pathname of
 -- the fetched source tarball and the temporary directory created to
 -- store it; or nil and an error message.
-function get_sources(rockspec, extract, dest_dir)
+function hg.get_sources(rockspec, extract, dest_dir)
    assert(type(rockspec) == "table")
    assert(type(dest_dir) == "string" or not dest_dir)
 
@@ -39,11 +42,13 @@ function get_sources(rockspec, extract, dest_dir)
    else
       store_dir = dest_dir
    end
-   fs.change_dir(store_dir)
+   local ok, err = fs.change_dir(store_dir)
+   if not ok then return nil, err end
    if not fs.execute(unpack(command)) then
       return nil, "Failed cloning hg repository."
    end
-   fs.change_dir(module)
+   ok, err = fs.change_dir(module)
+   if not ok then return nil, err end
 
    fs.delete(dir.path(store_dir, module, ".hg"))
    fs.delete(dir.path(store_dir, module, ".hgignore"))
@@ -52,3 +57,5 @@ function get_sources(rockspec, extract, dest_dir)
    return module, store_dir
 end
 
+
+return hg
