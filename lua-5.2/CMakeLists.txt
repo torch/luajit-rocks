@@ -83,7 +83,7 @@ SET(SRC_LIB
 # Shared library and executables
 ADD_LIBRARY(liblua SHARED ${SRC_LIB})
 SET_TARGET_PROPERTIES(liblua PROPERTIES 
-  PREFIX "lib" IMPORT_PREFIX "lib" OUTPUT_NAME "luajit")
+  PREFIX "lib" IMPORT_PREFIX "lib" OUTPUT_NAME "lua")
 ADD_EXECUTABLE(lua src/lua.c ${SRC_LIB})
 ADD_EXECUTABLE(luac src/luac.c ${SRC_LIB})
 TARGET_LINK_LIBRARIES(liblua ${LIBS})
