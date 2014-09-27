@@ -304,7 +304,7 @@ SET(DEPS
   )
                   
 ## COMPILE
-include_directories(${CMAKE_CURRENT_BINARY_DIR} dynasm src)
+include_directories(BEFORE ${CMAKE_CURRENT_BINARY_DIR} dynasm src)
 
 IF(WITH_AMALG)
   add_library(libluajit SHARED src/ljamalg.c ${DEPS} )
