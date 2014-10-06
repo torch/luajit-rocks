@@ -1,7 +1,11 @@
 
 --- Module implementing the LuaRocks "pack" command.
 -- Creates a rock, packing sources or binaries.
-module("luarocks.pack", package.seeall)
+--module("luarocks.pack", package.seeall)
+local pack = {}
+package.loaded["luarocks.pack"] = pack
+
+local unpack = unpack or table.unpack
 
 local path = require("luarocks.path")
 local repos = require("luarocks.repos")
@@ -13,9 +17,9 @@ local dir = require("luarocks.dir")
 local manif = require("luarocks.manif")
 local search = require("luarocks.search")
 
-help_summary = "Create a rock, packing sources or binaries."
-help_arguments = "{<rockspec>|<name> [<version>]}"
-help = [[
+pack.help_summary = "Create a rock, packing sources or binaries."
+pack.help_arguments = "{<rockspec>|<name> [<version>]}"
+pack.help = [[
 Argument may be a rockspec file, for creating a source rock,
 or the name of an installed package, for creating a binary rock.
 In the latter case, the app version may be given as a second
@@ -29,7 +33,7 @@ argument.
 -- @param rockspec_file string: An URL or pathname for a rockspec file.
 -- @return string or (nil, string): The filename of the resulting
 -- .src.rock file; or nil and an error message.
-local function pack_source_rock(rockspec_file)
+function pack.pack_source_rock(rockspec_file)
    assert(type(rockspec_file) == "string")
 
    local rockspec, err = fetch.load_rockspec(rockspec_file)
@@ -45,7 +49,8 @@ local function pack_source_rock(rockspec_file)
    if not source_file then
       return nil, source_dir
    end
-   fs.change_dir(source_dir)
+   local ok, err = fs.change_dir(source_dir)
+   if not ok then return nil, err end
 
    fs.delete(rock_file)
    fs.copy(rockspec_file, source_dir)
@@ -58,12 +63,14 @@ local function pack_source_rock(rockspec_file)
 end
 
 local function copy_back_files(name, version, file_tree, deploy_dir, pack_dir)
-   fs.make_dir(pack_dir)
+   local ok, err = fs.make_dir(pack_dir)
+   if not ok then return nil, err end
    for file, sub in pairs(file_tree) do
       local source = dir.path(deploy_dir, file)
       local target = dir.path(pack_dir, file)
       if type(sub) == "table" then
          local ok, err = copy_back_files(name, version, sub, source, target)
+         if not ok then return nil, err end
       else
          local versioned = path.versioned_name(source, deploy_dir, name, version)
          if fs.exists(versioned) then
@@ -128,14 +135,17 @@ local function do_pack_binary_rock(name, version)
 
    local is_binary = false
    if rock_manifest.lib then
-      copy_back_files(name, version, rock_manifest.lib, path.deploy_lib_dir(root), dir.path(temp_dir, "lib"))
+      local ok, err = copy_back_files(name, version, rock_manifest.lib, path.deploy_lib_dir(root), dir.path(temp_dir, "lib"))
+      if not ok then return nil, "Failed copying back files: " .. err end
       is_binary = true
    end
    if rock_manifest.lua then
-      copy_back_files(name, version, rock_manifest.lua, path.deploy_lua_dir(root), dir.path(temp_dir, "lua"))
+      local ok, err = copy_back_files(name, version, rock_manifest.lua, path.deploy_lua_dir(root), dir.path(temp_dir, "lua"))
+      if not ok then return nil, "Failed copying back files: " .. err end
    end
    
-   fs.change_dir(temp_dir)
+   local ok, err = fs.change_dir(temp_dir)
+   if not ok then return nil, err end
    if not is_binary and not repos.has_binaries(name, version) then
       rock_file = rock_file:gsub("%."..cfg.arch:gsub("%-","%%-").."%.", ".all.")
    end
@@ -148,7 +158,7 @@ local function do_pack_binary_rock(name, version)
    return rock_file
 end
 
-function pack_binary_rock(name, version, cmd, ...)
+function pack.pack_binary_rock(name, version, cmd, ...)
 
    -- The --pack-binary-rock option for "luarocks build" basically performs
    -- "luarocks build" on a temporary tree and then "luarocks pack". The
@@ -157,9 +167,9 @@ function pack_binary_rock(name, version, cmd, ...)
    -- to shave off the final deploy steps from the build phase and the initial
    -- collect steps from the pack phase.
 
-   local temp_dir = fs.make_temp_dir("luarocks-build-pack-"..dir.base_name(name))
+   local temp_dir, err = fs.make_temp_dir("luarocks-build-pack-"..dir.base_name(name))
    if not temp_dir then
-      return nil, "Failed creating temporary directory."
+      return nil, "Failed creating temporary directory: "..err
    end
    util.schedule_function(fs.delete, temp_dir)
 
@@ -182,7 +192,7 @@ end
 -- version may also be passed.
 -- @return boolean or (nil, string): true if successful or nil followed
 -- by an error message.
-function run(...)
+function pack.run(...)
    local flags, arg, version = util.parse_flags(...)
    assert(type(version) == "string" or not version)
    if type(arg) ~= "string" then
@@ -191,7 +201,7 @@ function run(...)
 
    local file, err
    if arg:match(".*%.rockspec") then
-      file, err = pack_source_rock(arg)
+      file, err = pack.pack_source_rock(arg)
    else
       file, err = do_pack_binary_rock(arg, version)
    end
@@ -202,3 +212,5 @@ function run(...)
       return true
    end
 end
+
+return pack

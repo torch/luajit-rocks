@@ -4,20 +4,17 @@ CMake-based LuaJIT + Luarocks
 # What's the point? #
 
 We want to provide an easy to way to users for installing _recent_ versions
-of LuaJIT and luarocks, with almost no efforts.
+of LuaJIT (or Lua) and luarocks, with almost no efforts.
 
-The provided LuaJIT and luarocks point on their respective git
+The provided LuaJIT (or Lua) and luarocks point on their respective git
 repository. We did not make any changes, except the compilation and
 installation process.
 
 In addition,
-  - Luarocks will be installed at the same location than LuaJIT and will know
+  - Luarocks (or Lua) will be installed at the same location than LuaJIT and will know
     about LuaJIT shared library location (mandatory for Windows installs). It will
     also not be confused if you have several LuaJIT+luarocks at different locations.
-    
-  - Luarocks will not use installed modules (such as luasocket, etc...), which
-    is a workaround on a blatant annoying Luarocks bug.
-    
+
   - Luarocks will come installed with [Torch rocks repository](http://torch.github.io/rocks.html).
   
   - Luarocks comes with mandatory system command line tools under Windows.
@@ -53,3 +50,9 @@ nmake install
 ```
 
 Note: we do not recommend (nor we support) installation under Cygwin.
+
+## Additional CMake flags
+
+  - If you prefer vanilla Lua 5.1 instead of Luajit, use `-DWITH_LUA51=ON`
+  - If you prefer vanilla Lua 5.2 instead of Luajit, use `-DWITH_LUA52=ON`
+  

@@ -14,9 +14,9 @@ IF(WIN32)
 ELSE()
   SET(INSTALL_BIN_SUBDIR "bin" CACHE STRING "installation executable subdirectory name")
   SET(INSTALL_LIB_SUBDIR "lib" CACHE STRING "installation library subdirectory name")
-  SET(INSTALL_LUA_PATH_SUBDIR "share/lua/5.1") # not editable
+  SET(INSTALL_LUA_PATH_SUBDIR "share/lua/${LUA_VERSION}") # not editable
   SET(INSTALL_LUA_LIB_SUBDIR "lib" CACHE STRING "installation lua lib subdirectory name")
-  SET(INSTALL_LUA_CPATH_SUBDIR "${INSTALL_LUA_LIB_SUBDIR}/lua/5.1") # not editable
+  SET(INSTALL_LUA_CPATH_SUBDIR "${INSTALL_LUA_LIB_SUBDIR}/lua/${LUA_VERSION}") # not editable
   SET(INSTALL_LUAROCKS_ROCKS_SUBDIR "lib/luarocks/rocks" CACHE STRING "installation luarocks rocks subdirectory name")
   SET(INSTALL_LUAROCKS_SYSCONF_SUBDIR "etc/luarocks" CACHE STRING "installation luarocks sysconfig subdirectory name")
 ENDIF()
@@ -47,7 +47,7 @@ IF(WIN32)
   SET(SHEBANG
 "rem=rem --[[
 @setlocal&  set PATH=${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_SUBDIR};%PATH% & set luafile=\"%~f0\" & if exist \"%~f0.bat\" set luafile=\"%~f0.bat\"
-@${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_SUBDIR}/luajit.exe %luafile% %*&  exit /b ]]")
+@${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_SUBDIR}/${LUA_EXE_NAME}.exe %luafile% %*&  exit /b ]]")
 
 ELSE()
   FIND_PACKAGE(Wget)
@@ -73,7 +73,7 @@ ELSE()
     SET(UNAME_M ${CMAKE_SYSTEM_PROCESSOR})
   ENDIF()
 
-  SET(SHEBANG "#!${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_SUBDIR}/luajit")
+  SET(SHEBANG "#!${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_SUBDIR}/${LUA_EXE_NAME}")
 
 ENDIF()
 
@@ -87,7 +87,9 @@ SET(LUAROCKS_FILES
   add.lua deps.lua build.lua search.lua show.lua manif_core.lua fetch.lua
   unpack.lua validate.lua cfg.lua download.lua help.lua util.lua index.lua
   cache.lua refresh_cache.lua loader.lua admin_remove.lua fetch/hg.lua
-  fetch/git_file.lua new_version.lua lint.lua purge.lua)
+  fetch/git_file.lua new_version.lua lint.lua purge.lua
+  doc.lua fetch/git_http.lua path_cmd.lua upload.lua upload/api.lua upload/multipart.lua
+  write_rockspec.lua)
 
 FOREACH(LUAROCKS_FILE ${LUAROCKS_FILES})
   GET_FILENAME_COMPONENT(_subpath "${LUAROCKS_FILE}" PATH)
