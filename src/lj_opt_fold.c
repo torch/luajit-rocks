@@ -505,13 +505,14 @@ LJFOLDF(kfold_strref_snew)
   } else {
     /* Reassociate: strref(snew(strref(str, a), len), b) ==> strref(str, a+b) */
     IRIns *ir = IR(fleft->op1);
-    IRRef1 str = ir->op1;  /* IRIns * is not valid across emitir. */
-    lua_assert(ir->o == IR_STRREF);
-    PHIBARRIER(ir);
-    fins->op2 = emitir(IRTI(IR_ADD), ir->op2, fins->op2);  /* Clobbers fins! */
-    fins->op1 = str;
-    fins->ot = IRT(IR_STRREF, IRT_P32);
-    return RETRYFOLD;
+    if (ir->o == IR_STRREF) {
+      IRRef1 str = ir->op1;  /* IRIns * is not valid across emitir. */
+      PHIBARRIER(ir);
+      fins->op2 = emitir(IRTI(IR_ADD), ir->op2, fins->op2); /* Clobbers fins! */
+      fins->op1 = str;
+      fins->ot = IRT(IR_STRREF, IRT_P32);
+      return RETRYFOLD;
+    }
   }
   return NEXTFOLD;
 }
@@ -1825,7 +1826,8 @@ LJFOLDF(merge_eqne_snew_kgc)
   if (len <= FOLD_SNEW_MAX_LEN) {
     IROp op = (IROp)fins->o;
     IRRef strref = fleft->op1;
-    lua_assert(IR(strref)->o == IR_STRREF);
+    if (IR(strref)->o != IR_STRREF)
+      return NEXTFOLD;
     if (op == IR_EQ) {
       emitir(IRTGI(IR_EQ), fleft->op2, lj_ir_kint(J, len));
       /* Caveat: fins/fleft/fright is no longer valid after emitir. */
