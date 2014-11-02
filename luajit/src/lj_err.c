@@ -378,7 +378,7 @@ typedef struct UndocumentedDispatcherContext {
   ULONG64 EstablisherFrame;
   ULONG64 TargetIp;
   PCONTEXT ContextRecord;
-  PEXCEPTION_ROUTINE LanguageHandler;
+  void (*LanguageHandler)(void);
   PVOID HandlerData;
   PUNWIND_HISTORY_TABLE HistoryTable;
   ULONG ScopeIndex;
@@ -518,12 +518,14 @@ static ptrdiff_t finderrfunc(lua_State *L)
     case FRAME_C:
       cf = cframe_prev(cf);
       /* fallthrough */
+    case FRAME_VARG:
+      frame = frame_prevd(frame);
+      break;
     case FRAME_CONT:
 #if LJ_HASFFI
       if ((frame-1)->u32.lo == LJ_CONT_FFI_CALLBACK)
 	cf = cframe_prev(cf);
 #endif
-    case FRAME_VARG:
       frame = frame_prevd(frame);
       break;
     case FRAME_CP:
