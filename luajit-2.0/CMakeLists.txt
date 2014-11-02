@@ -148,7 +148,7 @@ elseif ( APPLE )
   set ( CMAKE_EXE_LINKER_FLAGS "-pagezero_size 10000 -image_base 100000000 ${CMAKE_EXE_LINKER_FLAGS}" )
   set ( LJVM_MODE machasm )
 else ()
-  set ( LJVM_MODE elfasm )  
+  set ( LJVM_MODE elfasm )
 endif ()
 
 IF(NOT WIN32)
@@ -331,16 +331,16 @@ add_buildvm_target ( lj_recdef.h  recdef  ${SRC_LJLIB} )
 add_buildvm_target ( lj_libdef.h  libdef  ${SRC_LJLIB} )
 add_buildvm_target ( vmdef.lua  vmdef  ${SRC_LJLIB} )
 
-SET(DEPS 
+SET(DEPS
   ${LJ_VM_SRC}
   ${CMAKE_CURRENT_BINARY_DIR}/lj_ffdef.h
   ${CMAKE_CURRENT_BINARY_DIR}/lj_bcdef.h
   ${CMAKE_CURRENT_BINARY_DIR}/lj_libdef.h
   ${CMAKE_CURRENT_BINARY_DIR}/lj_recdef.h
-  ${CMAKE_CURRENT_BINARY_DIR}/lj_folddef.h 
+  ${CMAKE_CURRENT_BINARY_DIR}/lj_folddef.h
   ${CMAKE_CURRENT_BINARY_DIR}/vmdef.lua
   )
-                  
+
 ## COMPILE
 include_directories(BEFORE ${CMAKE_CURRENT_BINARY_DIR} dynasm src)
 
@@ -351,7 +351,7 @@ ELSE()
 ENDIF()
 
 target_link_libraries (libluajit ${LIBS} )
-SET_TARGET_PROPERTIES(libluajit PROPERTIES 
+SET_TARGET_PROPERTIES(libluajit PROPERTIES
   PREFIX "lib" IMPORT_PREFIX "lib" OUTPUT_NAME "luajit")
 
 IF(WIN32)
