@@ -53,6 +53,6 @@ Note: we do not recommend (nor we support) installation under Cygwin.
 
 ## Additional CMake flags
 
-  - If you prefer vanilla Lua 5.1 instead of Luajit, use `-DWITH_LUA51=ON`
-  - If you prefer vanilla Lua 5.2 instead of Luajit, use `-DWITH_LUA52=ON`
-  
+  - If you prefer vanilla Lua 5.1 instead of LuaJIT, use `-DWITH_LUA51=ON`
+  - If you prefer vanilla Lua 5.2 instead of LuaJIT, use `-DWITH_LUA52=ON`
+  - If you prefer LuaJIT 2.1 instead of LuaJIT 2.0, use `-DWITH_LUAJIT21=ON`
