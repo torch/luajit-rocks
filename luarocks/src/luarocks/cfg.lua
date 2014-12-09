@@ -293,7 +293,7 @@ local defaults = {
 }
 
 if detected.windows then
-   local full_prefix = site_config.LUAROCKS_PREFIX.."\\"..cfg.major_version
+   local full_prefix = site_config.LUAROCKS_PREFIX --.."\\"..cfg.major_version
    extra_luarocks_module_dir = full_prefix.."\\lua\\?.lua"
 
    home_config_file = home_config_file and home_config_file:gsub("\\","/")
@@ -323,7 +323,7 @@ if detected.windows then
       "MKDIR", "MV", "PWD", "RMDIR", "TEST", "UNAME", "WGET" }
    for _, var in ipairs(bins) do
       if defaults.variables[var] then
-         defaults.variables[var] = full_prefix.."\\tools\\"..defaults.variables[var]
+         defaults.variables[var] = full_prefix..defaults.variables[var]
       end
    end
 
