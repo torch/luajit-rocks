@@ -85,6 +85,7 @@ ENDIF()
 
 SET(LUAROCKS_FILES
   fs/unix/tools.lua fs/unix.lua fs/win32/tools.lua fs/win32.lua fs/lua.lua
+  fs/x64/tools.lua fs/x64.lua 
   persist.lua list.lua require.lua repos.lua dir.lua make_manifest.lua
   command_line.lua install.lua build/command.lua build/cmake.lua
   build/make.lua build/builtin.lua fetch/cvs.lua fetch/git.lua
