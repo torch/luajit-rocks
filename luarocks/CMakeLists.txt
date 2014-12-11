@@ -33,6 +33,7 @@ IF(WIN32)
   INSTALL(FILES ${WINUTILS_DLL_FILES} DESTINATION "${INSTALL_BIN_SUBDIR}")
    
   SET(WINUTILS_EXE_FILES
+    win32/bin/cmake.cmd
     win32/bin/7z.exe win32/bin/chmod.exe win32/bin/cp.exe
     win32/bin/find.exe win32/bin/ls.exe win32/bin/md5sum.exe
     win32/bin/mkdir.exe win32/bin/mv.exe win32/bin/objdump.exe
