@@ -99,7 +99,7 @@ function builtin.run(rockspec)
                       "-l" .. (variables.MSVCRT or "m"), "-luser32")
          return ok, wrapname
       end
-   elseif cfg.is_platform("win32") then
+   elseif cfg.is_platform("win32") or cfg.is_platform('x64') then
       compile_object = function(object, source, defines, incdirs)
          local extras = {}
          add_flags(extras, "-D%s", defines)
@@ -116,7 +116,8 @@ function builtin.run(rockspec)
          def:write("EXPORTS\n")
          def:write("luaopen_"..name:gsub("%.", "_").."\n")
          def:close()
-         local ok = execute(variables.LD, "-dll", "-def:"..deffile, "-out:"..library, dir.path(variables.LUA_LIBDIR, variables.LUALIB), unpack(extras))
+         -- diz --- local ok = execute(variables.LD, "-dll", "-def:"..deffile, "-out:"..library, dir.path(variables.LUA_LIBDIR, variables.LUALIB), unpack(extras))
+         local ok = execute(variables.LD, "-dll", "-out:"..library, dir.path(variables.LUA_LIBDIR, variables.LUALIB), unpack(extras))
          local basedir = ""
          if name:find("%.") ~= nil then
             basedir = name:gsub("%.%w+$", "\\")
@@ -127,6 +128,7 @@ function builtin.run(rockspec)
          if ok and fs.exists(manifestfile) then
             ok = execute(variables.MT, "-manifest", manifestfile, "-outputresource:"..basedir..basename..".dll;2")
          end
+	 --- diz --- io.read()
          return ok
       end
       compile_wrapper_binary = function(fullname, name)
