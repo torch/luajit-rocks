@@ -1,6 +1,6 @@
 /*
 ** Garbage collector.
-** Copyright (C) 2005-2014 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2015 Mike Pall. See Copyright Notice in luajit.h
 **
 ** Major portions taken verbatim or adapted from the Lua interpreter.
 ** Copyright (C) 1994-2008 Lua.org, PUC-Rio. See Copyright Notice in lua.h
@@ -268,12 +268,12 @@ static MSize gc_traverse_frames(global_State *g, lua_State *th)
 {
   TValue *frame, *top = th->top-1, *bot = tvref(th->stack);
   /* Note: extra vararg frame not skipped, marks function twice (harmless). */
-  for (frame = th->base-1; frame > bot; frame = frame_prev(frame)) {
+  for (frame = th->base-1; frame > bot+LJ_FR2; frame = frame_prev(frame)) {
     GCfunc *fn = frame_func(frame);
     TValue *ftop = frame;
     if (isluafunc(fn)) ftop += funcproto(fn)->framesize;
     if (ftop > top) top = ftop;
-    gc_markobj(g, fn);  /* Need to mark hidden function (or L). */
+    if (!LJ_FR2) gc_markobj(g, fn);  /* Need to mark hidden function (or L). */
   }
   top++;  /* Correct bias of -1 (frame == base-1). */
   if (top > tvref(th->maxstack)) top = tvref(th->maxstack);
@@ -284,7 +284,7 @@ static MSize gc_traverse_frames(global_State *g, lua_State *th)
 static void gc_traverse_thread(global_State *g, lua_State *th)
 {
   TValue *o, *top = th->top;
-  for (o = tvref(th->stack)+1; o < top; o++)
+  for (o = tvref(th->stack)+1+LJ_FR2; o < top; o++)
     gc_marktv(g, o);
   if (g->gc.state == GCSatomic) {
     top = tvref(th->stack) + th->stacksize;
@@ -374,7 +374,7 @@ static const GCFreeFunc gc_freefunc[] = {
 };
 
 /* Full sweep of a GC list. */
-#define gc_fullsweep(g, p)	gc_sweep(g, (p), LJ_MAX_MEM)
+#define gc_fullsweep(g, p)	gc_sweep(g, (p), ~(uint32_t)0)
 
 /* Partial sweep of a GC list. */
 static GCRef *gc_sweep(global_State *g, GCRef *p, uint32_t lim)
@@ -452,17 +452,18 @@ static void gc_call_finalizer(global_State *g, lua_State *L,
 {
   /* Save and restore lots of state around the __gc callback. */
   uint8_t oldh = hook_save(g);
-  MSize oldt = g->gc.threshold;
+  GCSize oldt = g->gc.threshold;
   int errcode;
   TValue *top;
   lj_trace_abort(g);
-  top = L->top;
-  L->top = top+2;
   hook_entergc(g);  /* Disable hooks and new traces during __gc. */
   g->gc.threshold = LJ_MAX_MEM;  /* Prevent GC steps. */
-  copyTV(L, top, mo);
-  setgcV(L, top+1, o, ~o->gch.gct);
-  errcode = lj_vm_pcall(L, top+1, 1+0, -1);  /* Stack: |mo|o| -> | */
+  top = L->top;
+  copyTV(L, top++, mo);
+  if (LJ_FR2) setnilV(top++);
+  setgcV(L, top, o, ~o->gch.gct);
+  L->top = top+1;
+  errcode = lj_vm_pcall(L, top, 1+0, -1);  /* Stack: |mo|o| -> | */
   hook_restore(g, oldh);
   g->gc.threshold = oldt;  /* Restore GC threshold. */
   if (errcode)
@@ -590,7 +591,7 @@ static void atomic(global_State *g, lua_State *L)
   g->gc.currentwhite = (uint8_t)otherwhite(g);  /* Flip current white. */
   g->strempty.marked = g->gc.currentwhite;
   setmref(g->gc.sweep, &g->gc.root);
-  g->gc.estimate = g->gc.total - (MSize)udsize;  /* Initial estimate. */
+  g->gc.estimate = g->gc.total - (GCSize)udsize;  /* Initial estimate. */
 }
 
 /* GC state machine. Returns a cost estimate for each step performed. */
@@ -614,7 +615,7 @@ static size_t gc_onestep(lua_State *L)
     g->gc.sweepstr = 0;
     return 0;
   case GCSsweepstring: {
-    MSize old = g->gc.total;
+    GCSize old = g->gc.total;
     gc_fullsweep(g, &g->strhash[g->gc.sweepstr++]);  /* Sweep one chain. */
     if (g->gc.sweepstr > g->strmask)
       g->gc.state = GCSsweep;  /* All string hash chains sweeped. */
@@ -623,7 +624,7 @@ static size_t gc_onestep(lua_State *L)
     return GCSWEEPCOST;
     }
   case GCSsweep: {
-    MSize old = g->gc.total;
+    GCSize old = g->gc.total;
     setmref(g->gc.sweep, gc_sweep(g, mref(g->gc.sweep, GCRef), GCSWEEPMAX));
     lua_assert(old >= g->gc.total);
     g->gc.estimate -= old - g->gc.total;
@@ -667,7 +668,7 @@ static size_t gc_onestep(lua_State *L)
 int LJ_FASTCALL lj_gc_step(lua_State *L)
 {
   global_State *g = G(L);
-  MSize lim;
+  GCSize lim;
   int32_t ostate = g->vmstate;
   setvmstate(g, GC);
   lim = (GCSTEPSIZE/100) * g->gc.stepmul;
@@ -676,13 +677,13 @@ int LJ_FASTCALL lj_gc_step(lua_State *L)
   if (g->gc.total > g->gc.threshold)
     g->gc.debt += g->gc.total - g->gc.threshold;
   do {
-    lim -= (MSize)gc_onestep(L);
+    lim -= (GCSize)gc_onestep(L);
     if (g->gc.state == GCSpause) {
       g->gc.threshold = (g->gc.estimate/100) * g->gc.pause;
       g->vmstate = ostate;
       return 1;  /* Finished a GC cycle. */
     }
-  } while ((int32_t)lim > 0);
+  } while (sizeof(lim) == 8 ? ((int64_t)lim > 0) : ((int32_t)lim > 0));
   if (g->gc.debt < GCSTEPSIZE) {
     g->gc.threshold = g->gc.total + GCSTEPSIZE;
     g->vmstate = ostate;
@@ -801,7 +802,7 @@ void lj_gc_barriertrace(global_State *g, uint32_t traceno)
 /* -- Allocator ----------------------------------------------------------- */
 
 /* Call pluggable memory allocator to allocate or resize a fragment. */
-void *lj_mem_realloc(lua_State *L, void *p, MSize osz, MSize nsz)
+void *lj_mem_realloc(lua_State *L, void *p, GCSize osz, GCSize nsz)
 {
   global_State *g = G(L);
   lua_assert((osz == 0) == (p == NULL));
@@ -809,19 +810,19 @@ void *lj_mem_realloc(lua_State *L, void *p, MSize osz, MSize nsz)
   if (p == NULL && nsz > 0)
     lj_err_mem(L);
   lua_assert((nsz == 0) == (p == NULL));
-  lua_assert(checkptr32(p));
+  lua_assert(checkptrGC(p));
   g->gc.total = (g->gc.total - osz) + nsz;
   return p;
 }
 
 /* Allocate new GC object and link it to the root set. */
-void * LJ_FASTCALL lj_mem_newgco(lua_State *L, MSize size)
+void * LJ_FASTCALL lj_mem_newgco(lua_State *L, GCSize size)
 {
   global_State *g = G(L);
   GCobj *o = (GCobj *)g->allocf(g->allocd, NULL, 0, size);
   if (o == NULL)
     lj_err_mem(L);
-  lua_assert(checkptr32(o));
+  lua_assert(checkptrGC(o));
   g->gc.total += size;
   setgcrefr(o->gch.nextgc, g->gc.root);
   setgcref(g->gc.root, o);

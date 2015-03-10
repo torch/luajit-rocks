@@ -1,6 +1,6 @@
 /*
 ** PPC IR assembler (SSA IR -> machine code).
-** Copyright (C) 2005-2014 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2015 Mike Pall. See Copyright Notice in luajit.h
 */
 
 /* -- Register allocator extensions --------------------------------------- */
@@ -323,8 +323,10 @@ static void asm_setupresult(ASMState *as, IRIns *ir, const CCallInfo *ci)
       } else {
 	ra_destreg(as, ir, RID_FPRET);
       }
+#if LJ_32
     } else if (hiop) {
       ra_destpair(as, ir);
+#endif
     } else {
       ra_destreg(as, ir, RID_RET);
     }
@@ -343,7 +345,7 @@ static void asm_callx(ASMState *as, IRIns *ir)
   func = ir->op2; irf = IR(func);
   if (irf->o == IR_CARG) { func = irf->op1; irf = IR(func); }
   if (irref_isk(func)) {  /* Call to constant address. */
-    ci.func = (ASMFunction)(void *)(irf->i);
+    ci.func = (ASMFunction)(void *)(intptr_t)(irf->i);
   } else {  /* Need a non-argument register for indirect calls. */
     RegSet allow = RSET_GPR & ~RSET_RANGE(RID_R0, REGARG_LASTGPR+1);
     Reg freg = ra_alloc1(as, func, allow);
@@ -361,7 +363,7 @@ static void asm_retf(ASMState *as, IRIns *ir)
 {
   Reg base = ra_alloc1(as, REF_BASE, RSET_GPR);
   void *pc = ir_kptr(IR(ir->op2));
-  int32_t delta = 1+bc_a(*((const BCIns *)pc - 1));
+  int32_t delta = 1+LJ_FR2+bc_a(*((const BCIns *)pc - 1));
   as->topslot -= (BCReg)delta;
   if ((int32_t)as->topslot < 0) as->topslot = 0;
   irt_setmark(IR(REF_BASE)->t);  /* Children must not coalesce with BASE reg. */
@@ -527,7 +529,7 @@ static void asm_tvptr(ASMState *as, Reg dest, IRRef ref)
     /* Otherwise use g->tmptv to hold the TValue. */
     RegSet allow = rset_exclude(RSET_GPR, dest);
     Reg type;
-    emit_tai(as, PPCI_ADDI, dest, RID_JGL, offsetof(global_State, tmptv)-32768);
+    emit_tai(as, PPCI_ADDI, dest, RID_JGL, (int32_t)offsetof(global_State, tmptv)-32768);
     if (!irt_ispri(ir->t)) {
       Reg src = ra_alloc1(as, ref, allow);
       emit_setgl(as, src, tmptv.gcr);

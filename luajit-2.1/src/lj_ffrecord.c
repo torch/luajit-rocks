@@ -1,6 +1,6 @@
 /*
 ** Fast function call recorder.
-** Copyright (C) 2005-2014 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2015 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #define lj_ffrecord_c
@@ -107,9 +107,10 @@ static void recff_stitch(jit_State *J)
   TValue *pframe = frame_prevl(base-1);
   TRef trcont;
 
+  lua_assert(!LJ_FR2);  /* TODO_FR2: handle frame shift. */
   /* Move func + args up in Lua stack and insert continuation. */
   memmove(&base[1], &base[-1], sizeof(TValue)*(J->maxslot+1));
-  setframe_ftsz(base+1, (int)((char *)(base+1) - (char *)pframe) + FRAME_CONT);
+  setframe_ftsz(base+1, ((char *)(base+1) - (char *)pframe) + FRAME_CONT);
   setcont(base, cont);
   setframe_pc(base, pc);
   if (LJ_DUALNUM) setintV(base-1, traceno); else base[-1].u64 = traceno;
@@ -195,7 +196,7 @@ static void LJ_FASTCALL recff_type(jit_State *J, RecordFFData *rd)
   uint32_t t;
   if (tvisnumber(&rd->argv[0]))
     t = ~LJ_TNUMX;
-  else if (LJ_64 && tvislightud(&rd->argv[0]))
+  else if (LJ_64 && !LJ_GC64 && tvislightud(&rd->argv[0]))
     t = ~LJ_TLIGHTUD;
   else
     t = ~itype(&rd->argv[0]);
@@ -466,6 +467,7 @@ static void LJ_FASTCALL recff_xpcall(jit_State *J, RecordFFData *rd)
     TValue argv0, argv1;
     TRef tmp;
     int errcode;
+    lua_assert(!LJ_FR2);  /* TODO_FR2: handle different frame setup. */
     /* Swap function and traceback. */
     tmp = J->base[0]; J->base[0] = J->base[1]; J->base[1] = tmp;
     copyTV(J->L, &argv0, &rd->argv[0]);

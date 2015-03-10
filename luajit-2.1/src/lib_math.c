@@ -1,6 +1,6 @@
 /*
 ** Math library.
-** Copyright (C) 2005-2014 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2015 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #include <math.h>
@@ -57,7 +57,7 @@ LJLIB_ASM(math_log)		LJLIB_REC(math_log)
 #else
     x = lj_vm_log2(x); y = 1.0 / lj_vm_log2(y);
 #endif
-    setnumV(L->base-1, x*y);  /* Do NOT join the expression to x / y. */
+    setnumV(L->base-1-LJ_FR2, x*y);  /* Do NOT join the expression to x / y. */
     return FFH_RES(1);
   }
   return FFH_RETRY;

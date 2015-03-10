@@ -1,6 +1,6 @@
 /*
 ** Bytecode dump definitions.
-** Copyright (C) 2005-2014 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2015 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #ifndef _LJ_BCDUMP_H
@@ -42,8 +42,9 @@
 #define BCDUMP_F_BE		0x01
 #define BCDUMP_F_STRIP		0x02
 #define BCDUMP_F_FFI		0x04
+#define BCDUMP_F_FR2		0x08
 
-#define BCDUMP_F_KNOWN		(BCDUMP_F_FFI*2-1)
+#define BCDUMP_F_KNOWN		(BCDUMP_F_FR2*2-1)
 
 /* Type codes for the GC constants of a prototype. Plus length for strings. */
 enum {

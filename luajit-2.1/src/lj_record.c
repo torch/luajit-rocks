@@ -1,6 +1,6 @@
 /*
 ** Trace recorder (bytecode -> SSA IR).
-** Copyright (C) 2005-2014 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2015 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #define lj_record_c
@@ -502,6 +502,7 @@ static LoopEvent rec_for(jit_State *J, const BCIns *fori, int isforl)
 static LoopEvent rec_iterl(jit_State *J, const BCIns iterins)
 {
   BCReg ra = bc_a(iterins);
+  lua_assert(!LJ_FR2);  /* TODO_FR2: handle different frame setup. */
   if (!tref_isnil(getslot(J, ra))) {  /* Looping back? */
     J->base[ra-1] = J->base[ra];  /* Copy result of ITERC to control var. */
     J->maxslot = ra-1+bc_b(J->pc[-1]);
@@ -672,6 +673,7 @@ static void rec_call_setup(jit_State *J, BCReg func, ptrdiff_t nargs)
   TValue *functv = &J->L->base[func];
   TRef *fbase = &J->base[func];
   ptrdiff_t i;
+  lua_assert(!LJ_FR2);  /* TODO_FR2: handle different frame setup. */
   for (i = 0; i <= nargs; i++)
     (void)getslot(J, func+i);  /* Ensure func and all args have a reference. */
   if (!tref_isfunc(fbase[0])) {  /* Resolve __call metamethod. */
@@ -788,7 +790,8 @@ void lj_record_ret(jit_State *J, BCReg rbase, ptrdiff_t gotresults)
     BCIns callins = *(frame_pc(frame)-1);
     ptrdiff_t nresults = bc_b(callins) ? (ptrdiff_t)bc_b(callins)-1 :gotresults;
     BCReg cbase = bc_a(callins);
-    GCproto *pt = funcproto(frame_func(frame - (cbase+1)));
+    GCproto *pt = funcproto(frame_func(frame - (cbase+1-LJ_FR2)));
+    lua_assert(!LJ_FR2);  /* TODO_FR2: handle different frame teardown. */
     if ((pt->flags & PROTO_NOJIT))
       lj_trace_err(J, LJ_TRERR_CJITOFF);
     if (J->framedepth == 0 && J->pt && frame == J->L->base - 1) {
@@ -812,6 +815,8 @@ void lj_record_ret(jit_State *J, BCReg rbase, ptrdiff_t gotresults)
 	       !bc_isret(bc_op(J->cur.startins))) {
       /* Return to lower frame would leave the loop in a root trace. */
       lj_trace_err(J, LJ_TRERR_LLEAVE);
+    } else if (J->needsnap) {  /* Tailcalled to ff with side-effects. */
+      lj_trace_err(J, LJ_TRERR_NYIRETL);  /* No way to insert snapshot here. */
     } else {  /* Return to lower frame. Guard for the target we return to. */
       TRef trpt = lj_ir_kgc(J, obj2gco(pt), IRT_PROTO);
       TRef trpc = lj_ir_kptr(J, (void *)frame_pc(frame));
@@ -973,6 +978,7 @@ static TRef rec_mm_arith(jit_State *J, RecordIndex *ix, MMS mm)
     lj_trace_err(J, LJ_TRERR_NOMM);
   }
 ok:
+  lua_assert(!LJ_FR2);  /* TODO_FR2: handle different frame setup. */
   base[0] = ix->mobj;
   copyTV(J->L, basev+0, &ix->mobjv);
   lj_record_call(J, func, 2);
@@ -989,6 +995,7 @@ static TRef rec_mm_len(jit_State *J, TRef tr, TValue *tv)
     BCReg func = rec_mm_prep(J, lj_cont_ra);
     TRef *base = J->base + func;
     TValue *basev = J->L->base + func;
+    lua_assert(!LJ_FR2);  /* TODO_FR2: handle different frame setup. */
     base[0] = ix.mobj; copyTV(J->L, basev+0, &ix.mobjv);
     base[1] = tr; copyTV(J->L, basev+1, tv);
 #if LJ_52
@@ -1011,6 +1018,7 @@ static void rec_mm_callcomp(jit_State *J, RecordIndex *ix, int op)
   BCReg func = rec_mm_prep(J, (op&1) ? lj_cont_condf : lj_cont_condt);
   TRef *base = J->base + func;
   TValue *tv = J->L->base + func;
+  lua_assert(!LJ_FR2);  /* TODO_FR2: handle different frame setup. */
   base[0] = ix->mobj; base[1] = ix->val; base[2] = ix->key;
   copyTV(J->L, tv+0, &ix->mobjv);
   copyTV(J->L, tv+1, &ix->valv);
@@ -1261,6 +1269,7 @@ TRef lj_record_idx(jit_State *J, RecordIndex *ix)
       BCReg func = rec_mm_prep(J, ix->val ? lj_cont_nop : lj_cont_ra);
       TRef *base = J->base + func;
       TValue *tv = J->L->base + func;
+      lua_assert(!LJ_FR2);  /* TODO_FR2: handle different frame setup. */
       base[0] = ix->mobj; base[1] = ix->tab; base[2] = ix->key;
       setfuncV(J->L, tv+0, funcV(&ix->mobjv));
       copyTV(J->L, tv+1, &ix->tabv);
@@ -1627,7 +1636,8 @@ static void rec_varg(jit_State *J, BCReg dst, ptrdiff_t nresults)
 	if (nvararg >= nresults)
 	  emitir(IRTGI(IR_GE), fr, lj_ir_kint(J, frofs+8*(int32_t)nresults));
 	else
-	  emitir(IRTGI(IR_EQ), fr, lj_ir_kint(J, frame_ftsz(J->L->base-1)));
+	  emitir(IRTGI(IR_EQ), fr,
+		 lj_ir_kint(J, (int32_t)frame_ftsz(J->L->base-1)));
 	vbase = emitir(IRTI(IR_SUB), REF_BASE, fr);
 	vbase = emitir(IRT(IR_ADD, IRT_P32), vbase, lj_ir_kint(J, frofs-8));
 	for (i = 0; i < nload; i++) {
@@ -1792,7 +1802,7 @@ void lj_record_ins(jit_State *J)
   if (LJ_UNLIKELY(J->postproc != LJ_POST_NONE)) {
     switch (J->postproc) {
     case LJ_POST_FIXCOMP:  /* Fixup comparison. */
-      pc = frame_pc(&J2G(J)->tmptv);
+      pc = (const BCIns *)(uintptr_t)J2G(J)->tmptv.u64;
       rec_comp_fixup(J, pc, (!tvistruecond(&J2G(J)->tmptv2) ^ (bc_op(*pc)&1)));
       /* fallthrough */
     case LJ_POST_FIXGUARD:  /* Fixup and emit pending guard. */
@@ -1890,7 +1900,7 @@ void lj_record_ins(jit_State *J)
   switch (bcmode_c(op)) {
   case BCMvar:
     copyTV(J->L, rcv, &lbase[rc]); ix.key = rc = getslot(J, rc); break;
-  case BCMpri: setitype(rcv, ~rc); ix.key = rc = TREF_PRI(IRT_NIL+rc); break;
+  case BCMpri: setpriV(rcv, ~rc); ix.key = rc = TREF_PRI(IRT_NIL+rc); break;
   case BCMnum: { cTValue *tv = proto_knumtv(J->pt, rc);
     copyTV(J->L, rcv, tv); ix.key = rc = tvisint(tv) ? lj_ir_kint(J, intV(tv)) :
     lj_ir_knumint(J, numV(tv)); } break;
@@ -2134,28 +2144,28 @@ void lj_record_ins(jit_State *J)
   /* -- Calls and vararg handling ----------------------------------------- */
 
   case BC_ITERC:
-    J->base[ra] = getslot(J, ra-3);
-    J->base[ra+1] = getslot(J, ra-2);
-    J->base[ra+2] = getslot(J, ra-1);
+    J->base[ra] = getslot(J, ra-3-LJ_FR2);
+    J->base[ra+1] = getslot(J, ra-2-LJ_FR2);
+    J->base[ra+2] = getslot(J, ra-1-LJ_FR2);
     { /* Do the actual copy now because lj_record_call needs the values. */
       TValue *b = &J->L->base[ra];
-      copyTV(J->L, b, b-3);
-      copyTV(J->L, b+1, b-2);
-      copyTV(J->L, b+2, b-1);
+      copyTV(J->L, b, b-3-LJ_FR2);
+      copyTV(J->L, b+1, b-2-LJ_FR2);
+      copyTV(J->L, b+2, b-1-LJ_FR2);
     }
     lj_record_call(J, ra, (ptrdiff_t)rc-1);
     break;
 
   /* L->top is set to L->base+ra+rc+NARGS-1+1. See lj_dispatch_ins(). */
   case BC_CALLM:
-    rc = (BCReg)(J->L->top - J->L->base) - ra;
+    rc = (BCReg)(J->L->top - J->L->base) - ra - LJ_FR2;
     /* fallthrough */
   case BC_CALL:
     lj_record_call(J, ra, (ptrdiff_t)rc-1);
     break;
 
   case BC_CALLMT:
-    rc = (BCReg)(J->L->top - J->L->base) - ra;
+    rc = (BCReg)(J->L->top - J->L->base) - ra - LJ_FR2;
     /* fallthrough */
   case BC_CALLT:
     lj_record_tailcall(J, ra, (ptrdiff_t)rc-1);
