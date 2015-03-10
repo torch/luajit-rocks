@@ -1,6 +1,6 @@
 /*
 ** IR assembler (SSA IR -> machine code).
-** Copyright (C) 2005-2014 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2015 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #define lj_asm_c
@@ -1262,9 +1262,6 @@ static void asm_call(ASMState *as, IRIns *ir)
 }
 
 #if !LJ_SOFTFP
-static void asm_fppow(ASMState *as, IRIns *ir, IRRef lref, IRRef rref);
-
-#if !LJ_TARGET_X86ORX64
 static void asm_fppow(ASMState *as, IRIns *ir, IRRef lref, IRRef rref)
 {
   const CCallInfo *ci = &lj_ir_callinfo[IRCALL_pow];
@@ -1274,7 +1271,6 @@ static void asm_fppow(ASMState *as, IRIns *ir, IRRef lref, IRRef rref)
   asm_setupresult(as, ir, ci);
   asm_gencall(as, ci, args);
 }
-#endif
 
 static int asm_fpjoin_pow(ASMState *as, IRIns *ir)
 {
@@ -1721,6 +1717,11 @@ static void asm_head_side(ASMState *as)
   int pass3 = 0;
   IRRef i;
 
+  if (as->snapno && as->topslot > as->parent->topslot) {
+    /* Force snap #0 alloc to prevent register overwrite in stack check. */
+    as->snapno = 0;
+    asm_snap_alloc(as);
+  }
   allow = asm_head_side_base(as, irp, allow);
 
   /* Scan all parent SLOADs and collect register dependencies. */
@@ -1912,7 +1913,7 @@ static void asm_tail_link(ASMState *as)
     mres = (int32_t)(snap->nslots - baseslot);
     switch (bc_op(*pc)) {
     case BC_CALLM: case BC_CALLMT:
-      mres -= (int32_t)(1 + bc_a(*pc) + bc_c(*pc)); break;
+      mres -= (int32_t)(1 + LJ_FR2 + bc_a(*pc) + bc_c(*pc)); break;
     case BC_RETM: mres -= (int32_t)(bc_a(*pc) + bc_d(*pc)); break;
     case BC_TSETM: mres -= (int32_t)bc_a(*pc); break;
     default: if (bc_op(*pc) < BC_FUNCF) mres = 0; break;
@@ -2087,21 +2088,26 @@ static void asm_setup_regsp(ASMState *as)
       if (inloop)
 	as->modset = RSET_SCRATCH;
       break;
-#if !LJ_TARGET_X86ORX64 && !LJ_SOFTFP
-    case IR_ATAN2: case IR_LDEXP:
+#if !LJ_SOFTFP
+    case IR_ATAN2:
+#if LJ_TARGET_X86
+      if (as->evenspill < 4)  /* Leave room to call atan2(). */
+	as->evenspill = 4;
+#endif
+#if !LJ_TARGET_X86ORX64
+    case IR_LDEXP:
+#endif
 #endif
     case IR_POW:
       if (!LJ_SOFTFP && irt_isnum(ir->t)) {
-#if LJ_TARGET_X86ORX64
-	ir->prev = REGSP_HINT(RID_XMM0);
-	if (inloop)
-	  as->modset |= RSET_RANGE(RID_XMM0, RID_XMM1+1)|RID2RSET(RID_EAX);
-#else
-	ir->prev = REGSP_HINT(RID_FPRET);
 	if (inloop)
 	  as->modset |= RSET_SCRATCH;
-#endif
+#if LJ_TARGET_X86
+	break;
+#else
+	ir->prev = REGSP_HINT(RID_FPRET);
 	continue;
+#endif
       }
       /* fallthrough for integer POW */
     case IR_DIV: case IR_MOD:
@@ -2114,26 +2120,25 @@ static void asm_setup_regsp(ASMState *as)
       break;
     case IR_FPMATH:
 #if LJ_TARGET_X86ORX64
-      if (ir->op2 == IRFPM_EXP2) {  /* May be joined to pow. */
-	ir->prev = REGSP_HINT(RID_XMM0);
-#if !LJ_64
-	if (as->evenspill < 4)  /* Leave room for 16 byte scratch area. */
+      if (ir->op2 <= IRFPM_TRUNC) {
+	if (!(as->flags & JIT_F_SSE4_1)) {
+	  ir->prev = REGSP_HINT(RID_XMM0);
+	  if (inloop)
+	    as->modset |= RSET_RANGE(RID_XMM0, RID_XMM3+1)|RID2RSET(RID_EAX);
+	  continue;
+	}
+	break;
+      } else if (ir->op2 == IRFPM_EXP2 && !LJ_64) {
+	if (as->evenspill < 4)  /* Leave room to call pow(). */
 	  as->evenspill = 4;
-#endif
-	if (inloop)
-	  as->modset |= RSET_RANGE(RID_XMM0, RID_XMM2+1)|RID2RSET(RID_EAX);
-	continue;
-      } else if (ir->op2 <= IRFPM_TRUNC && !(as->flags & JIT_F_SSE4_1)) {
-	ir->prev = REGSP_HINT(RID_XMM0);
-	if (inloop)
-	  as->modset |= RSET_RANGE(RID_XMM0, RID_XMM3+1)|RID2RSET(RID_EAX);
-	continue;
       }
+#endif
+      if (inloop)
+	as->modset |= RSET_SCRATCH;
+#if LJ_TARGET_X86
       break;
 #else
       ir->prev = REGSP_HINT(RID_FPRET);
-      if (inloop)
-	as->modset |= RSET_SCRATCH;
       continue;
 #endif
 #if LJ_TARGET_X86ORX64

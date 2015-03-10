@@ -1,6 +1,6 @@
 /*
 ** FFI library.
-** Copyright (C) 2005-2014 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2015 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #define lib_ffi_c
@@ -138,7 +138,7 @@ static int ffi_index_meta(lua_State *L, CTState *cts, CType *ct, MMS mm)
       }
     }
     copyTV(L, base, L->top);
-    tv = L->top-1;
+    tv = L->top-1-LJ_FR2;
   }
   return lj_meta_tailcall(L, tv);
 }
@@ -751,6 +751,9 @@ LJLIB_CF(ffi_abi)	LJLIB_REC(.)
   case H_(4ab624a8,4ab624a8): b = 1; break;  /* win */
 #endif
   case H_(3af93066,1f001464): b = 1; break;  /* le/be */
+#if LJ_GC64
+  case H_(9e89d2c9,13c83c92): b = 1; break;  /* gc64 */
+#endif
   default:
     break;
   }

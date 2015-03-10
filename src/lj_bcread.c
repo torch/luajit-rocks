@@ -1,6 +1,6 @@
 /*
 ** Bytecode reader.
-** Copyright (C) 2005-2014 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2015 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #define lj_bcread_c
@@ -48,7 +48,7 @@ static LJ_NOINLINE void bcread_error(LexState *ls, ErrMsg em)
 static LJ_NOINLINE void bcread_fill(LexState *ls, MSize len, int need)
 {
   lua_assert(len != 0);
-  if (len > LJ_MAX_MEM || ls->c < 0)
+  if (len > LJ_MAX_BUF || ls->c < 0)
     bcread_error(ls, LJ_ERR_BCBAD);
   do {
     const char *buf;
@@ -192,7 +192,7 @@ static void bcread_ktabk(LexState *ls, TValue *o)
     o->u32.hi = bcread_uleb128(ls);
   } else {
     lua_assert(tp <= BCDUMP_KTAB_TRUE);
-    setitype(o, ~tp);
+    setpriV(o, ~tp);
   }
 }
 
@@ -394,6 +394,7 @@ static int bcread_header(LexState *ls)
       bcread_byte(ls) != BCDUMP_VERSION) return 0;
   bcread_flags(ls) = flags = bcread_uleb128(ls);
   if ((flags & ~(BCDUMP_F_KNOWN)) != 0) return 0;
+  if ((flags & BCDUMP_F_FR2) != LJ_FR2*BCDUMP_F_FR2) return 0;
   if ((flags & BCDUMP_F_FFI)) {
 #if LJ_HASFFI
     lua_State *L = ls->L;

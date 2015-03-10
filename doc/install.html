@@ -4,7 +4,7 @@
 <title>Installation</title>
 <meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
 <meta name="Author" content="Mike Pall">
-<meta name="Copyright" content="Copyright (C) 2005-2014, Mike Pall">
+<meta name="Copyright" content="Copyright (C) 2005-2015, Mike Pall">
 <meta name="Language" content="en">
 <link rel="stylesheet" type="text/css" href="bluequad.css" media="screen">
 <link rel="stylesheet" type="text/css" href="bluequad-print.css" media="print">
@@ -134,18 +134,18 @@ operating systems, CPUs and compilers:
 <td class="compatos compatno">&nbsp;</td>
 </tr>
 <tr class="even">
+<td class="compatcpu"><a href="#cross2">ARM64</a></td>
+<td class="compatos">GCC 4.8+</td>
+<td class="compatos compatno">&nbsp;</td>
+<td class="compatos">Clang 3.5+</td>
+<td class="compatos compatno">&nbsp;</td>
+</tr>
+<tr class="odd">
 <td class="compatcpu"><a href="#cross2">PPC</a></td>
 <td class="compatos">GCC 4.3+</td>
 <td class="compatos">GCC 4.3+<br>GCC 4.1 (<a href="#ps3">PS3</a>)</td>
 <td class="compatos compatno">&nbsp;</td>
 <td class="compatos">XEDK (<a href="#xbox360">Xbox 360</a>)</td>
-</tr>
-<tr class="odd">
-<td class="compatcpu"><a href="#cross2">PPC/e500v2</a></td>
-<td class="compatos">GCC 4.3+</td>
-<td class="compatos">GCC 4.3+</td>
-<td class="compatos compatno">&nbsp;</td>
-<td class="compatos compatno">&nbsp;</td>
 </tr>
 <tr class="even">
 <td class="compatcpu"><a href="#cross2">MIPS</a></td>
@@ -385,10 +385,11 @@ make HOST_CC="gcc -m32" CROSS=arm-linux-gnueabi- \
 # ARM hard-float ABI with VFP (armhf, requires recent toolchain)
 make HOST_CC="gcc -m32" CROSS=arm-linux-gnueabihf-
 
+# ARM64 (requires x64 host)
+make CROSS=aarch64-linux-
+
 # PPC
 make HOST_CC="gcc -m32" CROSS=powerpc-linux-gnu-
-# PPC/e500v2 (fast interpreter only)
-make HOST_CC="gcc -m32" CROSS=powerpc-e500v2-linux-gnuspe-
 
 # MIPS big-endian
 make HOST_CC="gcc -m32" CROSS=mips-linux-
@@ -638,7 +639,7 @@ to me (the upstream) and not you (the package maintainer), anyway.
 </div>
 <div id="foot">
 <hr class="hide">
-Copyright &copy; 2005-2014 Mike Pall
+Copyright &copy; 2005-2015 Mike Pall
 <span class="noprint">
 &middot;
 <a href="contact.html">Contact</a>

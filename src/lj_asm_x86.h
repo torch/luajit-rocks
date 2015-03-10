@@ -1,6 +1,6 @@
 /*
 ** x86/x64 IR assembler (SSA IR -> machine code).
-** Copyright (C) 2005-2014 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2015 Mike Pall. See Copyright Notice in luajit.h
 */
 
 /* -- Guard handling ------------------------------------------------------ */
@@ -643,7 +643,7 @@ static void asm_retf(ASMState *as, IRIns *ir)
 {
   Reg base = ra_alloc1(as, REF_BASE, RSET_GPR);
   void *pc = ir_kptr(IR(ir->op2));
-  int32_t delta = 1+bc_a(*((const BCIns *)pc - 1));
+  int32_t delta = 1+LJ_FR2+bc_a(*((const BCIns *)pc - 1));
   as->topslot -= (BCReg)delta;
   if ((int32_t)as->topslot < 0) as->topslot = 0;
   irt_setmark(IR(REF_BASE)->t);  /* Children must not coalesce with BASE reg. */
@@ -1593,26 +1593,9 @@ static void asm_x87load(ASMState *as, IRRef ref)
   }
 }
 
-static void asm_fppow(ASMState *as, IRIns *ir, IRRef lref, IRRef rref)
-{
-  /* The modified regs must match with the *.dasc implementation. */
-  RegSet drop = RSET_RANGE(RID_XMM0, RID_XMM2+1)|RID2RSET(RID_EAX);
-  IRIns *irx;
-  if (ra_hasreg(ir->r))
-    rset_clear(drop, ir->r);  /* Dest reg handled below. */
-  ra_evictset(as, drop);
-  ra_destreg(as, ir, RID_XMM0);
-  emit_call(as, lj_vm_pow_sse);
-  irx = IR(lref);
-  if (ra_noreg(irx->r) && ra_gethint(irx->r) == RID_XMM1)
-    irx->r = RID_INIT;  /* Avoid allocating xmm1 for x. */
-  ra_left(as, RID_XMM0, lref);
-  ra_left(as, RID_XMM1, rref);
-}
-
 static void asm_fpmath(ASMState *as, IRIns *ir)
 {
-  IRFPMathOp fpm = ir->o == IR_FPMATH ? (IRFPMathOp)ir->op2 : IRFPM_OTHER;
+  IRFPMathOp fpm = (IRFPMathOp)ir->op2;
   if (fpm == IRFPM_SQRT) {
     Reg dest = ra_dest(as, ir, RSET_FPR);
     Reg left = asm_fuseload(as, ir->op1, RSET_FPR);
@@ -1645,53 +1628,28 @@ static void asm_fpmath(ASMState *as, IRIns *ir)
     }
   } else if (fpm == IRFPM_EXP2 && asm_fpjoin_pow(as, ir)) {
     /* Rejoined to pow(). */
-  } else {  /* Handle x87 ops. */
-    int32_t ofs = sps_scale(ir->s);  /* Use spill slot or temp slots. */
-    Reg dest = ir->r;
-    if (ra_hasreg(dest)) {
-      ra_free(as, dest);
-      ra_modified(as, dest);
-      emit_rmro(as, XO_MOVSD, dest, RID_ESP, ofs);
-    }
-    emit_rmro(as, XO_FSTPq, XOg_FSTPq, RID_ESP, ofs);
-    switch (fpm) {  /* st0 = lj_vm_*(st0) */
-    case IRFPM_EXP: emit_call(as, lj_vm_exp_x87); break;
-    case IRFPM_EXP2: emit_call(as, lj_vm_exp2_x87); break;
-    case IRFPM_SIN: emit_x87op(as, XI_FSIN); break;
-    case IRFPM_COS: emit_x87op(as, XI_FCOS); break;
-    case IRFPM_TAN: emit_x87op(as, XI_FPOP); emit_x87op(as, XI_FPTAN); break;
-    case IRFPM_LOG: case IRFPM_LOG2: case IRFPM_LOG10:
-      /* Note: the use of fyl2xp1 would be pointless here. When computing
-      ** log(1.0+eps) the precision is already lost after 1.0 is added.
-      ** Subtracting 1.0 won't recover it. OTOH math.log1p would make sense.
-      */
-      emit_x87op(as, XI_FYL2X); break;
-    case IRFPM_OTHER:
-      switch (ir->o) {
-      case IR_ATAN2:
-	emit_x87op(as, XI_FPATAN); asm_x87load(as, ir->op2); break;
-      case IR_LDEXP:
-	emit_x87op(as, XI_FPOP1); emit_x87op(as, XI_FSCALE); break;
-      default: lua_assert(0); break;
-      }
-      break;
-    default: lua_assert(0); break;
-    }
-    asm_x87load(as, ir->op1);
-    switch (fpm) {
-    case IRFPM_LOG: emit_x87op(as, XI_FLDLN2); break;
-    case IRFPM_LOG2: emit_x87op(as, XI_FLD1); break;
-    case IRFPM_LOG10: emit_x87op(as, XI_FLDLG2); break;
-    case IRFPM_OTHER:
-      if (ir->o == IR_LDEXP) asm_x87load(as, ir->op2);
-      break;
-    default: break;
-    }
+  } else {
+    asm_callid(as, ir, IRCALL_lj_vm_floor + fpm);
   }
 }
 
-#define asm_atan2(as, ir)	asm_fpmath(as, ir)
-#define asm_ldexp(as, ir)	asm_fpmath(as, ir)
+#define asm_atan2(as, ir)	asm_callid(as, ir, IRCALL_atan2)
+
+static void asm_ldexp(ASMState *as, IRIns *ir)
+{
+  int32_t ofs = sps_scale(ir->s);  /* Use spill slot or temp slots. */
+  Reg dest = ir->r;
+  if (ra_hasreg(dest)) {
+    ra_free(as, dest);
+    ra_modified(as, dest);
+    emit_rmro(as, XO_MOVSD, dest, RID_ESP, ofs);
+  }
+  emit_rmro(as, XO_FSTPq, XOg_FSTPq, RID_ESP, ofs);
+  emit_x87op(as, XI_FPOP1);
+  emit_x87op(as, XI_FSCALE);
+  asm_x87load(as, ir->op1);
+  asm_x87load(as, ir->op2);
+}
 
 static void asm_fppowi(ASMState *as, IRIns *ir)
 {
@@ -1773,8 +1731,12 @@ static void asm_intarith(ASMState *as, IRIns *ir, x86Arith xa)
   Reg dest, right;
   int32_t k = 0;
   if (as->flagmcp == as->mcp) {  /* Drop test r,r instruction. */
-    as->flagmcp = NULL;
-    as->mcp += (LJ_64 && *as->mcp < XI_TESTb) ? 3 : 2;
+    MCode *p = as->mcp + ((LJ_64 && *as->mcp < XI_TESTb) ? 3 : 2);
+    if ((p[1] & 15) < 14) {
+      if ((p[1] & 15) >= 12) p[1] -= 4;  /* L <->S, NL <-> NS */
+      as->flagmcp = NULL;
+      as->mcp = p;
+    }  /* else: cannot transform LE/NLE to cc without use of OF. */
   }
   right = IR(rref)->r;
   if (ra_hasreg(right)) {
