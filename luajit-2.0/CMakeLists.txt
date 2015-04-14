@@ -165,6 +165,12 @@ if ( LUA_USE_LIBM )
   list ( APPEND LIBS m )
 endif ()
 
+SET(CMAKE_THREAD_PREFER_PTHREAD TRUE)
+FIND_PACKAGE(Threads)
+IF(THREADS_FOUND)
+  LIST(APPEND LIBS ${CMAKE_THREAD_LIBS_INIT})
+ENDIF()
+
 ## SOURCES
 INSTALL(FILES src/luaconf.h src/lua.h src/lauxlib.h src/lualib.h
               src/lua.hpp src/luajit.h
