@@ -120,6 +120,13 @@
 #define LJ_TARGET_CONSOLE	1
 #endif
 
+#ifdef _DURANGO
+#define LJ_TARGET_XBOXONE	1
+#define LJ_TARGET_CONSOLE	1
+#define LJ_TARGET_GC64		1
+#define LoadLibraryA(name)      LoadLibraryExA((name), NULL, 0)
+#endif
+
 #define LJ_NUMMODE_SINGLE	0	/* Single-number mode only. */
 #define LJ_NUMMODE_SINGLE_DUAL	1	/* Default to single-number mode. */
 #define LJ_NUMMODE_DUAL		2	/* Dual-number mode only. */
@@ -158,6 +165,9 @@
 #define LJ_TARGET_MASKROT	1
 #define LJ_TARGET_UNALIGNED	1
 #define LJ_ARCH_NUMMODE		LJ_NUMMODE_SINGLE_DUAL
+#ifdef LUAJIT_ENABLE_GC64
+#define LJ_TARGET_GC64		1
+#endif
 
 #elif LUAJIT_TARGET == LUAJIT_ARCH_ARM
 
@@ -210,10 +220,12 @@
 
 #elif LUAJIT_TARGET == LUAJIT_ARCH_PPC
 
+#ifndef LJ_ARCH_ENDIAN
 #if __BYTE_ORDER__ != __ORDER_BIG_ENDIAN__
 #define LJ_ARCH_ENDIAN		LUAJIT_LE
 #else
 #define LJ_ARCH_ENDIAN		LUAJIT_BE
+#endif
 #endif
 
 #if _LP64
@@ -364,9 +376,6 @@
 #if !LJ_ARCH_PPC64 && LJ_ARCH_ENDIAN == LUAJIT_LE
 #error "No support for little-endian PPC32"
 #endif
-#if LJ_ARCH_PPC64
-#error "No support for PowerPC 64 bit mode (yet)"
-#endif
 #ifdef __NO_FPRS__
 #error "No support for PPC/e500 anymore (use LuaJIT 2.0)"
 #endif
@@ -484,7 +493,7 @@
 #define LUAJIT_NO_EXP2
 #endif
 
-#if defined(LUAJIT_NO_UNWIND) || defined(__symbian__) || LJ_TARGET_IOS || LJ_TARGET_PS3
+#if defined(LUAJIT_NO_UNWIND) || defined(__symbian__) || LJ_TARGET_IOS || LJ_TARGET_PS3 || LJ_TARGET_PS4
 #define LJ_NO_UNWIND		1
 #endif
 

@@ -34,7 +34,7 @@ CC= gcc
 # to slow down the C part by not omitting it. Debugging, tracebacks and
 # unwinding are not affected -- the assembler part has frame unwind
 # information and GCC emits it where needed (x64) or with -g (see CCDEBUG).
-CCOPT= -O2 -fomit-frame-pointer
+CCOPT= -O0 -fomit-frame-pointer
 # Use this if you want to generate a smaller binary (but it's slower):
 #CCOPT= -Os -fomit-frame-pointer
 # Note: it's no longer recommended to use -O3 with GCC 4.x.
@@ -52,7 +52,7 @@ CCOPT_arm64=
 CCOPT_ppc=
 CCOPT_mips=
 #
-CCDEBUG=
+CCDEBUG= -g3
 # Uncomment the next line to generate debug information:
 #CCDEBUG= -g
 #
@@ -221,6 +221,11 @@ ifneq (,$(findstring LJ_TARGET_ARM64 ,$(TARGET_TESTARCH)))
   TARGET_LJARCH= arm64
 else
 ifneq (,$(findstring LJ_TARGET_PPC ,$(TARGET_TESTARCH)))
+  ifneq (,$(findstring LJ_LE 1,$(TARGET_TESTARCH)))
+    TARGET_ARCH= -DLJ_ARCH_ENDIAN=LUAJIT_LE
+  else
+    TARGET_ARCH= -DLJ_ARCH_ENDIAN=LUAJIT_BE
+  endif
   TARGET_LJARCH= ppc
 else
 ifneq (,$(findstring LJ_TARGET_MIPS ,$(TARGET_TESTARCH)))
@@ -242,9 +247,6 @@ ifneq (,$(findstring LJ_TARGET_PS3 1,$(TARGET_TESTARCH)))
   TARGET_ARCH+= -D__CELLOS_LV2__
   TARGET_XCFLAGS+= -DLUAJIT_USE_SYSMALLOC
   TARGET_XLIBS+= -lpthread
-endif
-ifneq (,$(findstring LJ_NO_UNWIND 1,$(TARGET_TESTARCH)))
-  TARGET_ARCH+= -DLUAJIT_NO_UNWIND
 endif
 
 TARGET_XCFLAGS+= $(CCOPT_$(TARGET_LJARCH))
@@ -400,6 +402,10 @@ ifeq (,$(findstring LJ_ABI_SOFTFP 1,$(TARGET_TESTARCH)))
 else
   TARGET_ARCH+= -DLJ_ABI_SOFTFP=1
 endif
+ifneq (,$(findstring LJ_NO_UNWIND 1,$(TARGET_TESTARCH)))
+  DASM_AFLAGS+= -D NO_UNWIND
+  TARGET_ARCH+= -DLUAJIT_NO_UNWIND
+endif
 DASM_AFLAGS+= -D VER=$(subst LJ_ARCH_VERSION_,,$(filter LJ_ARCH_VERSION_%,$(subst LJ_ARCH_VERSION ,LJ_ARCH_VERSION_,$(TARGET_TESTARCH))))
 ifeq (Windows,$(TARGET_SYS))
   DASM_AFLAGS+= -D WIN
@@ -486,6 +492,9 @@ ALL_GEN= $(LJVM_S) $(ALL_HDRGEN) $(LIB_VMDEFP)
 WIN_RM= *.obj *.lib *.exp *.dll *.exe *.manifest *.pdb *.ilk
 ALL_RM= $(ALL_T) $(ALL_GEN) *.o host/*.o $(WIN_RM)
 
+LIB_FFI_TEST=../tests/lib/libffi-test.so ../tests/lib/libffi-test.so.1
+FFI_TEST=../tests/remote_ffi_call_fixed_args
+
 ##############################################################################
 # Build mode handling.
 ##############################################################################
@@ -569,14 +578,27 @@ E= @echo
 # Make targets.
 ##############################################################################
 
-default all:	$(TARGET_T)
+default all: $(TARGET_T) $(LIB_FFI_TEST) $(FFI_TEST)
+
+$(LIB_FFI_TEST): ../tests/lib/ffi-test.c
+	cd ../tests/lib && \
+		$(CC) -fPIC -shared -Wl,-rpath=lib,-soname,libffi-test.so.1 -o libffi-test.so.1 ffi-test.c && \
+		ln -fs libffi-test.so.1 libffi-test.so
+ifneq (,$(findstring LJ_32 1,$(TARGET_TESTARCH)))
+	# needed on 32 bits, or else "cannot restore segment prot after reloc: Permission denied" when run
+	# http://www.cubrid.org/wiki_tutorials/entry/cannot-restore-segment-prot-after-reloc-permission-denied
+	chcon -t texrel_shlib_t ../tests/lib/libffi-test.so.1
+endif
+
+$(FFI_TEST): $(FFI_TEST).c ../tests/lib/libffi-test.so
+	$(CC) $(FFI_TEST).c -o $(FFI_TEST) -L../tests/lib/ -lffi-test
 
 amalg:
 	@grep "^[+|]" ljamalg.c
 	$(MAKE) all "LJCORE_O=ljamalg.o"
 
 clean:
-	$(HOST_RM) $(ALL_RM)
+	$(HOST_RM) $(ALL_RM) $(LIB_FFI_TEST) $(FFI_TEST)
 
 libbc:
 	./$(LUAJIT_T) host/genlibbc.lua -o host/buildvm_libbc.h $(LJLIB_C)
