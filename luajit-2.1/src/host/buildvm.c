@@ -1,6 +1,6 @@
 /*
 ** LuaJIT VM builder.
-** Copyright (C) 2005-2014 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2015 Mike Pall. See Copyright Notice in luajit.h
 **
 ** This is a tool to build the hand-tuned assembler code required for
 ** LuaJIT's bytecode interpreter. It supports a variety of output formats
@@ -59,9 +59,9 @@ static int collect_reloc(BuildCtx *ctx, uint8_t *addr, int idx, int type);
 #include "../dynasm/dasm_x86.h"
 #elif LJ_TARGET_ARM
 #include "../dynasm/dasm_arm.h"
+#elif LJ_TARGET_ARM64
+#include "../dynasm/dasm_arm64.h"
 #elif LJ_TARGET_PPC
-#include "../dynasm/dasm_ppc.h"
-#elif LJ_TARGET_PPCSPE
 #include "../dynasm/dasm_ppc.h"
 #elif LJ_TARGET_MIPS
 #include "../dynasm/dasm_mips.h"
@@ -113,8 +113,8 @@ static const char *sym_decorate(BuildCtx *ctx,
       name[0] = '@';
     else
       *p = '\0';
-#elif (LJ_TARGET_PPC  || LJ_TARGET_PPCSPE) && !LJ_TARGET_CONSOLE
-    /* Keep @plt. */
+#elif LJ_TARGET_PPC && !LJ_TARGET_CONSOLE
+    /* Keep @plt etc. */
 #else
     *p = '\0';
 #endif
@@ -179,6 +179,7 @@ static int build_code(BuildCtx *ctx)
   ctx->nreloc = 0;
 
   ctx->globnames = globnames;
+  ctx->extnames = extnames;
   ctx->relocsym = (const char **)malloc(NRELOCSYM*sizeof(const char *));
   ctx->nrelocsym = 0;
   for (i = 0; i < (int)NRELOCSYM; i++) relocmap[i] = -1;

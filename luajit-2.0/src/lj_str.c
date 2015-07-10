@@ -1,6 +1,6 @@
 /*
 ** String handling.
-** Copyright (C) 2005-2014 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2015 Mike Pall. See Copyright Notice in luajit.h
 **
 ** Portions taken verbatim or adapted from the Lua interpreter.
 ** Copyright (C) 1994-2008 Lua.org, PUC-Rio. See Copyright Notice in lua.h
@@ -17,6 +17,122 @@
 #include "lj_str.h"
 #include "lj_state.h"
 #include "lj_char.h"
+
+/* -- Hashing ------------------------------------------------------------- */
+
+/* https://github.com/amadvance/tommyds */
+
+/* Copyright (c) 2010, Andrea Mazzoleni. All rights reserved. */
+
+/*   Redistribution and use in source and binary forms, with or without */
+/*   modification, are permitted provided that the following conditions */
+/*   are met: */
+
+/*   1. Redistributions of source code must retain the above copyright */
+/*   notice, this list of conditions and the following disclaimer. */
+
+/*   2. Redistributions in binary form must reproduce the above copyright */
+/*   notice, this list of conditions and the following disclaimer in the */
+/*   documentation and/or other materials provided with the distribution. */
+
+/*   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" */
+/*   AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE */
+/*   IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE */
+/*   ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE */
+/*   LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR */
+/*   CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF */
+/*   SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS */
+/*   INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN */
+/*   CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) */
+/*   ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE */
+/*   POSSIBILITY OF SUCH DAMAGE. */
+
+#define tommy_cast(type, value) (value)
+
+#define tommy_rot(x, k)                         \
+	(((x) << (k)) | ((x) >> (32 - (k))))
+
+#define tommy_mix(a, b, c)                   \
+	do {                                       \
+		a -= c;  a ^= tommy_rot(c, 4);  c += b;  \
+		b -= a;  b ^= tommy_rot(a, 6);  a += c;  \
+		c -= b;  c ^= tommy_rot(b, 8);  b += a;  \
+		a -= c;  a ^= tommy_rot(c, 16);  c += b; \
+		b -= a;  b ^= tommy_rot(a, 19);  a += c; \
+		c -= b;  c ^= tommy_rot(b, 4);  b += a;  \
+	} while (0)
+
+#define tommy_final(a, b, c)       \
+	do {                             \
+		c ^= b; c -= tommy_rot(b, 14); \
+		a ^= c; a -= tommy_rot(c, 11); \
+		b ^= a; b -= tommy_rot(a, 25); \
+		c ^= b; c -= tommy_rot(b, 16); \
+		a ^= c; a -= tommy_rot(c, 4);  \
+		b ^= a; b -= tommy_rot(a, 14); \
+		c ^= b; c -= tommy_rot(b, 24); \
+	} while (0)
+
+LJ_AINLINE MSize tommy_le_uint32_read(const void* ptr)
+{
+	/* allow unaligned read on Intel x86 and x86_64 platforms */
+#if defined(__i386__) || defined(_M_IX86) || defined(_X86_) || defined(__x86_64__) || defined(_M_X64)
+	/* defines from http://predef.sourceforge.net/ */
+	return *(const MSize*)ptr;
+#else
+	const unsigned char* ptr8 = tommy_cast(const unsigned char*, ptr);
+	return ptr8[0] + ((MSize)ptr8[1] << 8) + ((MSize)ptr8[2] << 16) + ((MSize)ptr8[3] << 24);
+#endif
+}
+
+MSize tommy_hash_u32(MSize init_val, const void* void_key, size_t key_len)
+{
+	const unsigned char* key = tommy_cast(const unsigned char*, void_key);
+	MSize a, b, c;
+
+	a = b = c = 0xdeadbeef + ((MSize)key_len) + init_val;
+
+	while (key_len > 12) {
+		a += tommy_le_uint32_read(key + 0);
+		b += tommy_le_uint32_read(key + 4);
+		c += tommy_le_uint32_read(key + 8);
+
+		tommy_mix(a, b, c);
+
+		key_len -= 12;
+		key += 12;
+	}
+
+	switch (key_len) {
+    case 0 :
+      return c; /* used only when called with a zero length */
+    case 12 :
+      c += tommy_le_uint32_read(key + 8);
+      b += tommy_le_uint32_read(key + 4);
+      a += tommy_le_uint32_read(key + 0);
+      break;
+    case 11 : c += ((MSize)key[10]) << 16;
+    case 10 : c += ((MSize)key[9]) << 8;
+    case 9 : c += key[8];
+    case 8 :
+      b += tommy_le_uint32_read(key + 4);
+      a += tommy_le_uint32_read(key + 0);
+      break;
+    case 7 : b += ((MSize)key[6]) << 16;
+    case 6 : b += ((MSize)key[5]) << 8;
+    case 5 : b += key[4];
+    case 4 :
+      a += tommy_le_uint32_read(key + 0);
+      break;
+    case 3 : a += ((MSize)key[2]) << 16;
+    case 2 : a += ((MSize)key[1]) << 8;
+    case 1 : a += key[0];
+	}
+
+	tommy_final(a, b, c);
+
+	return c;
+}
 
 /* -- String interning ---------------------------------------------------- */
 
@@ -97,28 +213,15 @@ GCstr *lj_str_new(lua_State *L, const char *str, size_t lenx)
   GCstr *s;
   GCobj *o;
   MSize len = (MSize)lenx;
-  MSize a, b, h = len;
+  MSize h = len;
   if (lenx >= LJ_MAX_STR)
     lj_err_msg(L, LJ_ERR_STROV);
   g = G(L);
-  /* Compute string hash. Constants taken from lookup3 hash by Bob Jenkins. */
-  if (len >= 4) {  /* Caveat: unaligned access! */
-    a = lj_getu32(str);
-    h ^= lj_getu32(str+len-4);
-    b = lj_getu32(str+(len>>1)-2);
-    h ^= b; h -= lj_rol(b, 14);
-    b += lj_getu32(str+(len>>2)-1);
-  } else if (len > 0) {
-    a = *(const uint8_t *)str;
-    h ^= *(const uint8_t *)(str+len-1);
-    b = *(const uint8_t *)(str+(len>>1));
-    h ^= b; h -= lj_rol(b, 14);
+  if (len > 0) {
+    h = tommy_hash_u32(0, str, len);
   } else {
     return &g->strempty;
   }
-  a ^= h; a -= lj_rol(h, 11);
-  b ^= a; b -= lj_rol(a, 25);
-  h ^= b; h -= lj_rol(b, 16);
   /* Check if the string has already been interned. */
   o = gcref(g->strhash[h & g->strmask]);
   if (LJ_LIKELY((((uintptr_t)str+len-1) & (LJ_PAGESIZE-1)) <= LJ_PAGESIZE-4)) {

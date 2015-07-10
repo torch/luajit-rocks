@@ -1,6 +1,6 @@
 /*
 ** C declaration parser.
-** Copyright (C) 2005-2014 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2015 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #include "lj_obj.h"
@@ -1051,43 +1051,43 @@ static void cp_decl_gccattribute(CPState *cp, CPDecl *decl)
       GCstr *attrstr = cp->str;
       cp_next(cp);
       switch (attrstr->hash) {
-      case H_(64a9208e,8ce14319): case H_(8e6331b2,95a282af):  /* aligned */
+      case H_(e7471a47,4d0a050c): case H_(1c311a30,407787d5):  /* aligned */
 	cp_decl_align(cp, decl);
 	break;
-      case H_(42eb47de,f0ede26c): case H_(29f48a09,cf383e0c):  /* packed */
+      case H_(5b224448,e7fa3369): case H_(1af1262a,6fe1f4a9):  /* packed */
 	decl->attr |= CTFP_PACKED;
 	break;
-      case H_(0a84eef6,8dfab04c): case H_(995cf92c,d5696591):  /* mode */
+      case H_(3f4777d9,ab58d362): case H_(1d3d8c5d,a4ccaedf):  /* mode */
 	cp_decl_mode(cp, decl);
 	break;
-      case H_(0ab31997,2d5213fa): case H_(bf875611,200e9990):  /* vector_size */
+      case H_(e6a57578,a46255fb): case H_(75ce2002,cffcd6f9):  /* vector_size */
 	{
 	  CTSize vsize = cp_decl_sizeattr(cp);
 	  if (vsize) CTF_INSERT(decl->attr, VSIZEP, lj_fls(vsize));
 	}
 	break;
 #if LJ_TARGET_X86
-      case H_(5ad22db8,c689b848): case H_(439150fa,65ea78cb):  /* regparm */
+      case H_(80199aeb,b13dfdf7): case H_(bf8a4622,fcdf05d8):  /* regparm */
 	CTF_INSERT(decl->fattr, REGPARM, cp_decl_sizeattr(cp));
 	decl->fattr |= CTFP_CCONV;
 	break;
-      case H_(18fc0b98,7ff4c074): case H_(4e62abed,0a747424):  /* cdecl */
+      case H_(a8174bd6,2f052a31): case H_(b41f25a7,561af38e):  /* cdecl */
 	CTF_INSERT(decl->fattr, CCONV, CTCC_CDECL);
 	decl->fattr |= CTFP_CCONV;
 	break;
-      case H_(72b2e41b,494c5a44): case H_(f2356d59,f25fc9bd):  /* thiscall */
+      case H_(813acdf4,2f4dc8da): case H_(407d56cf,30df0843):  /* thiscall */
 	CTF_INSERT(decl->fattr, CCONV, CTCC_THISCALL);
 	decl->fattr |= CTFP_CCONV;
 	break;
-      case H_(0d0ffc42,ab746f88): case H_(21c54ba1,7f0ca7e3):  /* fastcall */
+      case H_(c93885bc,ac2a6b49): case H_(17092923,17979644):  /* fastcall */
 	CTF_INSERT(decl->fattr, CCONV, CTCC_FASTCALL);
 	decl->fattr |= CTFP_CCONV;
 	break;
-      case H_(ef76b040,9412e06a): case H_(de56697b,c750e6e1):  /* stdcall */
+      case H_(27bff963,43de753b): case H_(8014db5c,728f7bd2):  /* stdcall */
 	CTF_INSERT(decl->fattr, CCONV, CTCC_STDCALL);
 	decl->fattr |= CTFP_CCONV;
 	break;
-      case H_(ea78b622,f234bd8e): case H_(252ffb06,8d50f34b):  /* sseregparm */
+      case H_(f35337b4,ca968d6c): case H_(b2ade19f,1467c44f):  /* sseregparm */
 	decl->fattr |= CTF_SSEREGPARM;
 	decl->fattr |= CTFP_CCONV;
 	break;
@@ -1120,7 +1120,7 @@ static void cp_decl_msvcattribute(CPState *cp, CPDecl *decl)
     GCstr *attrstr = cp->str;
     cp_next(cp);
     switch (attrstr->hash) {
-    case H_(bc2395fa,98f267f8):  /* align */
+    case H_(44b28229,c0929327):  /* align */
       cp_decl_align(cp, decl);
       break;
     default:  /* Ignore all other attributes. */
@@ -1709,16 +1709,16 @@ static void cp_pragma(CPState *cp, BCLine pragmaline)
 {
   cp_next(cp);
   if (cp->tok == CTOK_IDENT &&
-      cp->str->hash == H_(e79b999f,42ca3e85))  {  /* pack */
+      cp->str->hash == H_(15124dae,9e80d09b))  {  /* pack */
     cp_next(cp);
     cp_check(cp, '(');
     if (cp->tok == CTOK_IDENT) {
-      if (cp->str->hash == H_(738e923c,a1b65954)) {  /* push */
+      if (cp->str->hash == H_(6a04313e,6b9cb01a)) {  /* push */
 	if (cp->curpack < CPARSE_MAX_PACKSTACK) {
 	  cp->packstack[cp->curpack+1] = cp->packstack[cp->curpack];
 	  cp->curpack++;
 	}
-      } else if (cp->str->hash == H_(6c71cf27,6c71cf27)) {  /* pop */
+      } else if (cp->str->hash == H_(52fae0de,52fae0de)) {  /* pop */
 	if (cp->curpack > 0) cp->curpack--;
       } else {
 	cp_errmsg(cp, cp->tok, LJ_ERR_XSYMBOL);
@@ -1754,7 +1754,7 @@ static void cp_decl_multi(CPState *cp)
     if (cp->tok == '#') {  /* Workaround, since we have no preprocessor, yet. */
       BCLine pragmaline = cp->linenumber;
       if (!(cp_next(cp) == CTOK_IDENT &&
-	    cp->str->hash == H_(f5e6b4f8,1d509107)))  /* pragma */
+	    cp->str->hash == H_(3f192524,f711b0ec)))  /* pragma */
 	cp_errmsg(cp, cp->tok, LJ_ERR_XSYMBOL);
       cp_pragma(cp, pragmaline);
       continue;
