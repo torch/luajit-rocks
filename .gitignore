@@ -33,3 +33,6 @@ build/luarocks/src/luarocks/config.lua
 build/luarocks/src/luarocks/site_config.lua
 build/Makefile
 build/LUA_DEV
+bld07/*
+x86/*
+x64/*
