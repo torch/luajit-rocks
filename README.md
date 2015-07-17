@@ -57,9 +57,11 @@ cmake  -DCMAKE_INSTALL_PREFIX=/your/prefix -DWITH_LUAJIT21=ON -G "NMake Makefile
 ```
 
 Under Windows - remember to update your environment variables. Assuming that your/prefix is d:/luainstall :
-LUA_CPATH=d:\luainstall?.DLL;d:\luainstall\LIB\?.DLL;?.DLL
-LUA_DEV=d:/luainstall
-LUA_PATH=;;d:\luainstall\?;d:\luainstall\lua\?\init.lua;d:\luainstall\?.lua
+```sh
+set LUA_CPATH=d:\luainstall?.DLL;d:\luainstall\LIB\?.DLL;?.DLL
+set LUA_DEV=d:/luainstall
+set LUA_PATH=;;d:\luainstall\?;d:\luainstall\lua\?\init.lua;d:\luainstall\?.lua
+```
 
 Then install packages you need:
 luarocks install torch
