@@ -15,7 +15,7 @@
 |
 |// Convenience macros for TOC handling.
 |.macro blex, target
-|  bl extern target@got        //ld 12, target@got(2)
+|  bl extern target@got		// ld 12, target@got(2)
 |  mtctr r12
 |  bctrl
 |//It is require to restore the TOC register after a function call
@@ -91,45 +91,30 @@
 |// Stack layout while in interpreter. Must match with lj_frame.h.
 |
 |.define SAVE_LR,	416(sp)
-|.define CFRAME_SPACE,	400	   // Delta for sp.
-|// Back chain for sp:	400(sp)    <-- sp entering interpreter
-|.define SAVE_FPR_,	256        // .. 256+18*8: 64 bit FPR saves.
-|.define SAVE_GPR_,	112        // .. 112+18*8: 64 bit GPR saves.
-|//			92(sp)     // \ 32 bit C frame info.
-|.define SAVE_ERRF,	88(sp)     // |
-|.define SAVE_NRES,	80(sp)     // |
-|.define SAVE_L,	72(sp)     //  > Parameter save area.
-|.define SAVE_PC,	64(sp)     // |
-|.define SAVE_MULTRES,	56(sp)     // |
-|.define SAVE_CFRAME,	48(sp)     // / 64 bit C frame chain.
-|
-|.if LJ_ARCH_ENDIAN == LUAJIT_LE
-|.define TMPD_HI,	44(sp)     // \ Link editor temp (ABI mandated).
-|.define TMPD_LO,	40(sp)     // /
-|.define TONUM_HI,	36(sp)     // \ Compiler temp (ABI mandated).
-|.define TONUM_LO,	32(sp)     // /
-|.else  // big endian
-|.define TMPD_LO,	44(sp)     // \ Link editor temp (ABI mandated).
-|.define TMPD_HI,	40(sp)     // /
-|.define TONUM_LO,	36(sp)     // \ Compiler temp (ABI mandated).
-|.define TONUM_HI,	32(sp)     // /
-|.endif
-|//			32(sp)     // Callee parameter save area (ABI mandated).
-|.define SAVE_TOC,	24(sp)     // TOC save area.
+|.define CFRAME_SPACE,	400	// Delta for sp.
+|// Back chain for sp:	400(sp)	<-- sp entering interpreter
+|.define SAVE_FPR_,	256	// .. 256+18*8: 64 bit FPR saves.
+|.define SAVE_GPR_,	112	// .. 112+18*8: 64 bit GPR saves.
+|//			92(sp)	// \ 32 bit C frame info.
+|.define SAVE_ERRF,	88(sp)	// |
+|.define SAVE_NRES,	80(sp)	// |
+|.define SAVE_L,	72(sp)	//  > Parameter save area.
+|.define SAVE_PC,	64(sp)	// |
+|.define SAVE_MULTRES,	56(sp)	// |
+|.define SAVE_CFRAME,	48(sp)	// / 64 bit C frame chain.
+|.define TMPD_HI,	44(sp)	// \ Link editor temp (ABI mandated).
+|.define TMPD_LO,	40(sp)	// /
+|.define TONUM_HI,	36(sp)	// \ Compiler temp (ABI mandated).
+|.define TONUM_LO,	32(sp)	// /
+|//			32(sp)	// Callee parameter save area (ABI mandated).
+|.define SAVE_TOC,	24(sp)	// TOC save area.
 |// Next frame lr:	16(sp)
-|.define SAVE_CR,	8(sp)      // 64 bit CR save.
-|// Back chain for sp:	0(sp)	   <-- sp while in interpreter
+|.define SAVE_CR,	8(sp)	// 64 bit CR save.
+|// Back chain for sp:	0(sp) 	<-- sp while in interpreter
 |
-|
-|.if LJ_ARCH_ENDIAN == LUAJIT_LE
-|.define TMPD_BLO,	40(sp)     // LSB
-|.define TMPD,		TMPD_LO    // base address of TMPD doubleword
-|.define TONUM_D,	TONUM_LO   // base address of TONUM doubleword
-|.else  // big endian
-|.define TMPD_BLO,	47(sp)     // LSB
-|.define TMPD,		TMPD_HI    // base address of TMPD doubleword
-|.define TONUM_D,	TONUM_HI   // base address of TONUM doubleword
-|.endif
+|.define TMPD_BLO,	40(sp)	// LSB
+|.define TMPD,		TMPD_LO	// base address of TMPD doubleword
+|.define TONUM_D,	TONUM_LO// base address of TONUM doubleword
 |
 |.macro save_, reg
 |  std r..reg, SAVE_GPR_+(reg-14)*8(sp)
@@ -319,18 +304,55 @@
 |
 |.macro nop_arg, p; .endmacro
 |
-|.macro checknum_sig,         reg; li TMP4, LJ_TISNUM ; checktp cr0, reg, get_value,   cmpd,  TMP4; .endmacro
-|.macro checknum_sig,     cr, reg; li TMP4, LJ_TISNUM ; checktp cr,  reg, get_value,   cmpd,  TMP4; .endmacro
-|.macro checknum,             reg; li TMP4, LJ_TISNUM ; checktp cr0, reg, get_value,   cmpld, TMP4; .endmacro
-|.macro checknum,         cr, reg; li TMP4, LJ_TISNUM ; checktp cr,  reg, get_value,   cmpld, TMP4; .endmacro
-|.macro checkstr,             reg; li TMP4, LJ_TSTR   ; checktp cr0, reg, clear_field, cmpd,  TMP4; .endmacro
-|.macro checktab,             reg; li TMP4, LJ_TTAB   ; checktp cr0, reg, clear_field, cmpd,  TMP4; .endmacro
-|.macro checkfunc,            reg; li TMP4, LJ_TFUNC  ; checktp cr0, reg, clear_field, cmpd,  TMP4; .endmacro
-|.macro checkthread,          reg; li TMP4, LJ_TTHREAD; checktp cr0, reg, clear_field, cmpd,  TMP4; .endmacro
+|.macro checknum_sig, reg
+|  li TMP4, LJ_TISNUM
+|  checktp cr0, reg, get_value, cmpd, TMP4
+|.endmacro
+|.macro checknum_sig, cr, reg
+|  li TMP4, LJ_TISNUM
+|  checktp cr, reg, get_value, cmpd, TMP4
+|.endmacro
+|.macro checknum, reg
+|  li TMP4, LJ_TISNUM
+|  checktp cr0, reg, get_value, cmpld, TMP4
+|.endmacro
+|.macro checknum, cr, reg
+|  li TMP4, LJ_TISNUM
+|  checktp cr, reg, get_value, cmpld, TMP4
+|.endmacro
+|.macro checkstr, reg
+|  li TMP4, LJ_TSTR
+|  checktp cr0, reg, clear_field, cmpd, TMP4
+|.endmacro
+|.macro checktab, reg
+|  li TMP4, LJ_TTAB
+|  checktp cr0, reg, clear_field, cmpd, TMP4
+|.endmacro
+|.macro checkfunc, reg
+|  li TMP4, LJ_TFUNC
+|  checktp cr0, reg, clear_field, cmpd, TMP4
+|.endmacro
+|.macro checkthread, reg
+|  li TMP4, LJ_TTHREAD
+|  checktp cr0, reg, clear_field, cmpd, TMP4
+|.endmacro
 |
-|.macro checknil_noclear,     reg; li TMP4, LJ_TNIL   ; checktp cr0, reg, nop_arg,     cmpd,  TMP4; .endmacro
-|.macro checknum_noclear,     reg; li TMP4, LJ_TISNUM ; checktp cr0, reg, nop_arg,     cmpld, TMP4; .endmacro
-|.macro checkfunc_noclear,    reg; li TMP4, LJ_TFUNC  ; checktp cr0, reg, nop_arg,     cmpd,  TMP4; .endmacro
+|.macro checknil_noclear, reg
+|  li TMP4, LJ_TNIL
+|  checktp cr0, reg, nop_arg, cmpd, TMP4
+|.endmacro
+|.macro checknum_noclear, reg
+|  li TMP4, LJ_TISNUM
+|  checktp cr0, reg, nop_arg, cmpld, TMP4
+|.endmacro
+|.macro checknum_noclear, cr, reg
+|  li TMP4, LJ_TISNUM
+|  checktp cr, reg, nop_arg, cmpld, TMP4
+|.endmacro
+|.macro checkfunc_noclear, reg
+|  li TMP4, LJ_TFUNC
+|  checktp cr0, reg, nop_arg, cmpd, TMP4
+|.endmacro
 |
 |.macro branch_RD
 |  srdi TMP0, RD, 1
@@ -364,7 +386,7 @@
 |.macro barrierback, tab, mark, tmp
 |  ld tmp, DISPATCH_GL(gc.grayagain)(DISPATCH)
 |  // Assumes LJ_GC_BLACK is 0x04.
-|   rlwinm mark, mark, 0, 30, 28		// black2gray(tab)
+|   rlwinm mark, mark, 0, 30, 28	// black2gray(tab)
 |  std tab, DISPATCH_GL(gc.grayagain)(DISPATCH)
 |   stb mark, tab->marked
 |  std tmp, tab->gclist
@@ -692,7 +714,7 @@ static void build_subroutines(BuildCtx *ctx)
   |
   |->cont_dispatch:
   |  // BASE = meta base, RA = resultptr, RD = (nresults+1)*8
-  |  ld TMP0, -32(BASE)		// Continuation.
+  |  ld TMP0, -32(BASE)			// Continuation.
   |  clear_field TMP0
   |   mr RB, BASE
   |   mr BASE, TMP2			// Restore caller BASE.
@@ -1274,7 +1296,8 @@ static void build_subroutines(BuildCtx *ctx)
   |
   |.ffunc_1 tostring
   |  // Only handles the string or number case inline.
-  |  mr CARG3, CARG1			// save CARG1 type for checknum_sig and fff_restv
+  |  // save CARG1 type for checknum_sig and fff_restv
+  |  mr CARG3, CARG1
   |  checkstr CARG3
   |  // A __tostring method in the string base metatable is ignored.
   |  beq ->fff_restv			// String key?
@@ -1439,7 +1462,8 @@ static void build_subroutines(BuildCtx *ctx)
   |  blt ->fff_fallback
   |  lbz TMP1, DISPATCH_GL(hookmask)(DISPATCH)
   |   mr TMP2, BASE
-  |  checkfunc_noclear CARG2; bne ->fff_fallback  // Traceback must be a function.
+  |  // Traceback must be a function.
+  |  checkfunc_noclear CARG2; bne ->fff_fallback
   |   la BASE, 24(BASE)
   |  // Remember active hook before pcall.
   |  rlwinm TMP1, TMP1, 32-HOOK_ACTIVE_SHIFT, 31, 31
@@ -2555,7 +2579,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |.if FFI
     |  cmpdi TMP0, LJ_TCDATA
     |.endif
-    |   ldx STR:TMP1, KBASE, RD	// KBASE-8-str_const*8
+    |   ldx STR:TMP1, KBASE, RD		// KBASE-8-str_const*8
     |  subfic TMP0, TMP0, LJ_TSTR
     |.if FFI
     |  beq ->vmeta_equal_cd
@@ -2758,7 +2782,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  beq >4
     |1:
     |  ins_next1
-    |  rldicl TMP0, TMP1, 0, 32        // clear the high order 32 bits
+    |  rldicl TMP0, TMP1, 0, 32		// clear the high order 32 bits
     |  add TMP0, TMP0, TISNUM
     |  stdx TMP0, RA, BASE
     |3:
@@ -2914,7 +2938,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |1:
     |  ins_next1
     |  li TISNUM, LJ_TISNUM
-    |  sldi TISNUM, TISNUM, 47
+    |  set_oper_type TISNUM, TISNUM
     |  clear_field CARG1
     |  add CARG1, CARG1, TISNUM
     |  stdux CARG1, RA, BASE
@@ -3105,10 +3129,10 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |   ld CARG2, UPVAL:RB->v
     |  andi. TMP3, TMP3, LJ_GC_BLACK	// isblack(uv)
     |    lbz TMP0, UPVAL:RB->closed
-    |   ld TMP2, 0(RD)
+    |   ld TMP1, 0(RD)
+    |   get_oper_type TMP2, TMP1
     |   stfd f0, 0(CARG2)
     |    cmpldi cr1, TMP0, 0
-    |   ld TMP1, 8(RD)
     |  cror 4*cr0+eq, 4*cr0+eq, 4*cr1+eq
     |   subi TMP2, TMP2, (LJ_TNUMX+1)
     |  bne >2				// Upvalue is closed and black?
@@ -3175,7 +3199,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  ld LFUNC:RB, FRAME_FUNC(BASE)
     |    srdi TMP0, RD, 3
     |   addi RA, RA, offsetof(GCfuncL, uvptr)
-    |    sldi TMP0, TMP0, 47
+    |    set_oper_type TMP0, TMP0
     |  clear_field RB
     |    not TMP0, TMP0
     |  ldx UPVAL:RB, LFUNC:RB, RA
@@ -3238,12 +3262,12 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
       |  rlwinm CARG3, RD, 18, 27, 31
       |  cmpdi CARG2, 0x7ff; beq >3
       |2:
-      |  bl extern lj_tab_new  // (lua_State *L, int32_t asize, uint32_t hbits)
+      |  bl extern lj_tab_new	// (lua_State *L, int32_t asize, uint32_t hbits)
       |  // Returns Table *.
     } else {
       |  subfic TMP1, RD, -8
       |  ldx CARG2, KBASE, TMP1		// KBASE-8-tab_const*8
-      |  bl extern lj_tab_dup  // (lua_State *L, Table *kt)
+      |  bl extern lj_tab_dup	// (lua_State *L, Table *kt)
       |  // Returns Table *.
     }
     |  ld BASE, L->base
@@ -3259,7 +3283,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     }
     |5:
     |  mr SAVE0, RD
-    |  bl extern lj_gc_step_fixtop  // (lua_State *L)
+    |  bl extern lj_gc_step_fixtop	// (lua_State *L)
     |  mr RD, SAVE0
     |  mr CARG1, L
     |  b <1
@@ -3273,7 +3297,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  clear_field LFUNC:TMP2
     |  ld TAB:RB, LFUNC:TMP2->env
     |   subfic TMP1, RD, -8
-    |   ldx STR:RC, KBASE, TMP1	// KBASE-8-str_const*8
+    |   ldx STR:RC, KBASE, TMP1		// KBASE-8-str_const*8
     if (op == BC_GGET) {
       |  b ->BC_TGETS_Z
     } else {
@@ -3286,10 +3310,11 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  ldux CARG1, RB, BASE
     |  ldux CARG2, RC, BASE
     |  checktab CARG1
-    |   checknum cr1, CARG2
+    |   checknum_noclear cr1, CARG2
     |  bne ->vmeta_tgetv
     |  lwz TMP0, TAB:CARG1->asize
     |   bne cr1, >5
+    |   get_value CARG2			// Number is cleared through get_value
     |   ld TMP1, TAB:CARG1->array
     |  cmpld TMP0, CARG2
     |   sldi TMP2, CARG2, 3
@@ -3313,8 +3338,8 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |
     |5:
     |  checkstr CARG2; bne ->vmeta_tgetv
-    |  mr RC, CARG2
-    |  clear_field RC
+    |  mr RC, CARG2			// BC_TGETS_Z needs plain RB and RC
+    |  mr RB, CARG1			// pointers without its type
     |  b ->BC_TGETS_Z			// String key?
     break;
   case BC_TGETS:
@@ -3324,7 +3349,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |    clear_field TAB:RB
     |   subfic TMP1, RC, -8
     |  checktab CARG1
-    |   ldx STR:RC, KBASE, TMP1	// KBASE-8-str_const*8
+    |   ldx STR:RC, KBASE, TMP1		// KBASE-8-str_const*8
     |  bne ->vmeta_tgets1
     |->BC_TGETS_Z:
     |  // TAB:RB = GCtab *, STR:RC = GCstr *, RA = dst*8
@@ -3458,7 +3483,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |    clear_field TAB:RB
     |   subfic TMP1, RC, -8
     |  checktab CARG1
-    |   ldx STR:RC, KBASE, TMP1	// KBASE-8-str_const*8
+    |   ldx STR:RC, KBASE, TMP1		// KBASE-8-str_const*8
     |  bne ->vmeta_tsets1
     |->BC_TSETS_Z:
     |  // TAB:RB = GCtab *, STR:RC = GCstr *, RA = src*8
@@ -3479,7 +3504,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |     ld NODE:TMP1, NODE:TMP2->next
     |  checkstr CARG1; bne >5
     |   cmpd CARG1, STR:RC; bne >5
-    |    checknil_noclear CARG2; beq >4		// Key found, but nil value?
+    |    checknil_noclear CARG2; beq >4	// Key found, but nil value?
     |2:
     |  andi. TMP0, TMP3, LJ_GC_BLACK	// isblack(table)
     |    stfd f14, NODE:TMP2->val
@@ -4082,7 +4107,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  b <1
     if (vk) {
       |6:  // Potential overflow.
-      |  checkov <4		// Ignore unrelated overflow.
+      |  checkov <4			// Ignore unrelated overflow.
       |  b <2
     }
     if (vk) {
@@ -4161,7 +4186,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
   case BC_IITERL:
     |  // RA = base*8, RD = target
     |  ldux TMP1, RA, BASE
-    |  checknil_noclear TMP1; beq >1		// Stop if iterator returned nil.
+    |  checknil_noclear TMP1; beq >1	// Stop if iterator returned nil.
     if (op == BC_JITERL) {
       |   std TMP1, -8(RA)
       |  b =>BC_JLOOP
@@ -4346,83 +4371,80 @@ static int build_backend(BuildCtx *ctx)
   return BC__MAX;
 }
 
-/*
- * TODO: Below is the old PPC debug code that needs to be updated to 64b ABI:
- *
- * Power Architecture 64-Bit ELF V2 ABI Specification, version 1.0
- * Source: http://openpowerfoundation.org/technical/technical-resources/technical-specifications/
- */
 /* Emit pseudo frame-info for all assembler functions. */
 static void emit_asm_debug(BuildCtx *ctx)
 {
   int fcofs = (int)((uint8_t *)ctx->glob[GLOB_vm_ffi_call] - ctx->code);
-  int i;
+  int i, lr_offset = -16 >> 2;
   switch (ctx->mode) {
   case BUILD_elfasm:
     fprintf(ctx->fp, "\t.section .debug_frame,\"\",@progbits\n");
     fprintf(ctx->fp,
-	".Lframe0:\n"
-	"\t.long .LECIE0-.LSCIE0\n"
+	".Lframe0:\n"			/* Common Information Entry (CIE) */
+	"\t.long .LECIE0-.LSCIE0\n"	/* length */
 	".LSCIE0:\n"
-	"\t.long 0xffffffff\n"
-	"\t.byte 0x1\n"
-	"\t.string \"\"\n"
-	"\t.uleb128 0x1\n"
-	"\t.sleb128 -4\n"
-	"\t.byte 65\n"
-	"\t.byte 0xc\n\t.uleb128 1\n\t.uleb128 0\n"
+	"\t.long 0xffffffff\n"		/* CIE_Id */
+	"\t.byte 0x1\n"			/* Version */
+	"\t.string \"\"\n"		/* augmentation */
+	"\t.uleb128 0x1\n"		/* code_alignment_factor */
+	"\t.sleb128 -4\n"		/* data_alignment_factor */
+	"\t.byte 65\n"			/* return_address_register (LR) */
+	"\t.byte 0xc\n\t.uleb128 1\n\t.uleb128 0\n"	/* DW_CFA_def_cfa */
 	"\t.align 2\n"
 	".LECIE0:\n\n");
     fprintf(ctx->fp,
-	".LSFDE0:\n"
-	"\t.long .LEFDE0-.LASFDE0\n"
+	".LSFDE0:\n"			/* Frame Description Entry (FDE) */
+	"\t.long .LEFDE0-.LASFDE0\n"	/* length */
 	".LASFDE0:\n"
-	"\t.long .Lframe0\n"
-	"\t.long .Lbegin\n"
-	"\t.long %d\n"
-	"\t.byte 0xe\n\t.uleb128 %d\n"
-	"\t.byte 0x11\n\t.uleb128 65\n\t.sleb128 -1\n"
+	"\t.long .Lframe0\n"		/* CIE_ptr */
+	"\t.long .Lbegin\n"		/* initial_location */
+	"\t.long %d\n"			/* address_range */
+	"\t.byte 0xe\n\t.uleb128 %d\n"	/* DW_CFA_def_cfa_offset */
+	/* DW_CFA_offset_extended_sf */
+	"\t.byte 0x11\n\t.uleb128 65\n\t.sleb128 %d\n"
+	/* DW_CFA_offset_extended */
 	"\t.byte 0x5\n\t.uleb128 70\n\t.uleb128 55\n",
-	fcofs, CFRAME_SIZE);
+	fcofs, CFRAME_SIZE, lr_offset);
     for (i = 14; i <= 31; i++)
       fprintf(ctx->fp,
-	"\t.byte %d\n\t.uleb128 %d\n"
-	"\t.byte %d\n\t.uleb128 %d\n",
-	0x80+i, 37+(31-i), 0x80+32+i, 2+2*(31-i));
+	"\t.byte %d\n\t.uleb128 %d\n"	/* DW_CFA_offset from r14 to r31 */
+	"\t.byte %d\n\t.uleb128 %d\n",	/* DW_CFA_offset from f14 to f31 */
+	0x80+i, 38+2*(31-i), 0x80+32+i, 2+2*(31-i));
     fprintf(ctx->fp,
 	"\t.align 2\n"
 	".LEFDE0:\n\n");
 #if LJ_HASFFI
     fprintf(ctx->fp,
-	".LSFDE1:\n"
-	"\t.long .LEFDE1-.LASFDE1\n"
+	".LSFDE1:\n"			/* Frame Description Entry (FDE) */
+	"\t.long .LEFDE1-.LASFDE1\n"	/* length */
 	".LASFDE1:\n"
-	"\t.long .Lframe0\n"
-	"\t.long lj_vm_ffi_call\n"
-	"\t.long %d\n"
-	"\t.byte 0x11\n\t.uleb128 65\n\t.sleb128 -1\n"
-	"\t.byte 0x8e\n\t.uleb128 2\n"
-	"\t.byte 0xd\n\t.uleb128 0xe\n"
+	"\t.long .Lframe0\n"		/* CIE_ptr */
+	"\t.long lj_vm_ffi_call\n"	/* initial_location */
+	"\t.long %d\n"			/* address_range */
+	/* DW_CFA_offset_extended_sf */
+	"\t.byte 0x11\n\t.uleb128 65\n\t.sleb128 %d\n"
+	"\t.byte 0x8e\n\t.uleb128 2\n"	/* DW_CFA_offset */
+	"\t.byte 0xd\n\t.uleb128 0xe\n"	/* DW_CFA_def_cfa_register */
 	"\t.align 2\n"
-	".LEFDE1:\n\n", (int)ctx->codesz - fcofs);
+	".LEFDE1:\n\n", (int)ctx->codesz - fcofs, lr_offset);
 #endif
 #if !LJ_NO_UNWIND
     fprintf(ctx->fp, "\t.section .eh_frame,\"a\",@progbits\n");
     fprintf(ctx->fp,
 	".Lframe1:\n"
-	"\t.long .LECIE1-.LSCIE1\n"
-	".LSCIE1:\n"
-	"\t.long 0\n"
-	"\t.byte 0x1\n"
-	"\t.string \"zPR\"\n"
-	"\t.uleb128 0x1\n"
-	"\t.sleb128 -4\n"
-	"\t.byte 65\n"
+	"\t.long .LECIE1-.LSCIE1\n"	/* length */
+	".LSCIE1:\n"			/* Common Information Entry (CIE) */
+	"\t.long 0\n"			/* CIE_Id */
+	"\t.byte 0x1\n"			/* Version */
+	"\t.string \"zPR\"\n"		/* augmentation string */
+	"\t.uleb128 0x1\n"		/* code_alignment_factor */
+	"\t.sleb128 -4\n"		/* data_alignment_factor */
+	"\t.byte 65\n"			/* return_address_register (LR) */
 	"\t.uleb128 6\n"			/* augmentation length */
 	"\t.byte 0x1b\n"			/* pcrel|sdata4 */
 	"\t.long lj_err_unwind_dwarf-.\n"
 	"\t.byte 0x1b\n"			/* pcrel|sdata4 */
-	"\t.byte 0xc\n\t.uleb128 1\n\t.uleb128 0\n"
+	"\t.byte 0xc\n\t.uleb128 1\n\t.uleb128 0\n"	/* DW_CFA_def_cfa */
 	"\t.align 2\n"
 	".LECIE1:\n\n");
     fprintf(ctx->fp,
@@ -4433,15 +4455,17 @@ static void emit_asm_debug(BuildCtx *ctx)
 	"\t.long .Lbegin-.\n"
 	"\t.long %d\n"
 	"\t.uleb128 0\n"			/* augmentation length */
-	"\t.byte 0xe\n\t.uleb128 %d\n"
-	"\t.byte 0x11\n\t.uleb128 65\n\t.sleb128 -1\n"
+	"\t.byte 0xe\n\t.uleb128 %d\n"		/* DW_CFA_def_cfa_offset */
+	/* DW_CFA_offset_extended_sf */
+	"\t.byte 0x11\n\t.uleb128 65\n\t.sleb128 %d\n"
+	/* DW_CFA_offset_extended */
 	"\t.byte 0x5\n\t.uleb128 70\n\t.uleb128 55\n",
-	fcofs, CFRAME_SIZE);
+	fcofs, CFRAME_SIZE, lr_offset);
     for (i = 14; i <= 31; i++)
       fprintf(ctx->fp,
-	"\t.byte %d\n\t.uleb128 %d\n"
-	"\t.byte %d\n\t.uleb128 %d\n",
-	0x80+i, 37+(31-i), 0x80+32+i, 2+2*(31-i));
+	"\t.byte %d\n\t.uleb128 %d\n"	/* DW_CFA_offset from r14 to r31 */
+	"\t.byte %d\n\t.uleb128 %d\n",	/* DW_CFA_offset from f14 to f31 */
+	0x80+i, 38+2*(31-i), 0x80+32+i, 2+2*(31-i));
     fprintf(ctx->fp,
 	"\t.align 2\n"
 	".LEFDE2:\n\n");
@@ -4449,16 +4473,16 @@ static void emit_asm_debug(BuildCtx *ctx)
     fprintf(ctx->fp,
 	".Lframe2:\n"
 	"\t.long .LECIE2-.LSCIE2\n"
-	".LSCIE2:\n"
-	"\t.long 0\n"
-	"\t.byte 0x1\n"
-	"\t.string \"zR\"\n"
-	"\t.uleb128 0x1\n"
-	"\t.sleb128 -4\n"
-	"\t.byte 65\n"
+	".LSCIE2:\n"			/* Common Information Entry (CIE) */
+	"\t.long 0\n"			/* CIE_Id */
+	"\t.byte 0x1\n"			/* Version */
+	"\t.string \"zR\"\n"		/* augmentation string */
+	"\t.uleb128 0x1\n"		/* code_alignment_factor */
+	"\t.sleb128 -4\n"		/* data_alignment_factor */
+	"\t.byte 65\n"			/* return_address_register (LR) */
 	"\t.uleb128 1\n"			/* augmentation length */
 	"\t.byte 0x1b\n"			/* pcrel|sdata4 */
-	"\t.byte 0xc\n\t.uleb128 1\n\t.uleb128 0\n"
+	"\t.byte 0xc\n\t.uleb128 1\n\t.uleb128 0\n"	/* DW_CFA_def_cfa */
 	"\t.align 2\n"
 	".LECIE2:\n\n");
     fprintf(ctx->fp,
@@ -4469,11 +4493,12 @@ static void emit_asm_debug(BuildCtx *ctx)
 	"\t.long lj_vm_ffi_call-.\n"
 	"\t.long %d\n"
 	"\t.uleb128 0\n"			/* augmentation length */
-	"\t.byte 0x11\n\t.uleb128 65\n\t.sleb128 -1\n"
-	"\t.byte 0x8e\n\t.uleb128 2\n"
-	"\t.byte 0xd\n\t.uleb128 0xe\n"
+	/* DW_CFA_offset_extended_sf */
+	"\t.byte 0x11\n\t.uleb128 65\n\t.sleb128 %d\n"
+	"\t.byte 0x8e\n\t.uleb128 2\n"	/* DW_CFA_offset */
+	"\t.byte 0xd\n\t.uleb128 0xe\n"	/* DW_CFA_def_cfa_register */
 	"\t.align 2\n"
-	".LEFDE3:\n\n", (int)ctx->codesz - fcofs);
+	".LEFDE3:\n\n", (int)ctx->codesz - fcofs, lr_offset);
 #endif
 #endif
     break;

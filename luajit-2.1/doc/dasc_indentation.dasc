@@ -1,0 +1,26 @@
+|// Note: The ragged indentation of the instructions is intentional.
+|//       The starting columns indicate data dependencies.
+
+  |->cont_cat:				// RA = resultptr, RB = meta base
+  |                            --- inputs: PC, RB, RA, BASE, L --
+
+     |---> indented on this column if depends on INS or TMP1         \ Both are indendepent
+     ||--> indented on this column if depends on CARG2, f0 or BASE   / at first, got it?
+     vv
+  |  lwz INS, -4(PC)              -> INS   defined      <= needs PC                    
+  |   subi CARG2, RB, 16          -> CARG2 defined      <= needs RB                      
+  |  decode_RB8 SAVE0, INS        -> SAVE0 defined      <= needs INS                      
+  |   lfd f0, 0(RA)               -> f0    defined      <= needs RA           
+  |  add TMP1, BASE, SAVE0        -> TMP1  defined      <= needs BASE SAVE0             
+  |   stp BASE, L->base           -> L->base wrote      <= needs BASE L
+  |  cmplw TMP1, CARG2                                  <= needs TMP1 CARG2       
+     ^
+     |- here the dependency was on both columns! use the inner most
+
+  |   sub CARG3, CARG2, TMP1      -> CARG3 defined      <= needs CARG2 TMP1              
+  |  decode_RA8 RA, INS           -> RA    defined      <= needs INS          
+  |   stfd f0, 0(CARG2)           -> 0(CARG2) wrote     <= needs CARG2 f0                     
+  |  bney ->BC_CAT_Z                                          
+  |   stfdx f0, BASE, RA          -> BASE + RA wrote    <= needs f0 BASE RA                           
+  |  b ->cont_nop                                             
+                               --- useful regs output: CARG2, CARG3, INS, RA
