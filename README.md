@@ -15,7 +15,7 @@ In addition,
     about LuaJIT shared library location (mandatory for Windows installs). It will
     also not be confused if you have several LuaJIT+luarocks at different locations.
 
-  - Luarocks will come installed with [Torch rocks repository](http://torch.github.io/rocks.html).
+  - Luarocks will come installed with [Torch rocks repository](http://htmlpreview.github.io/?https://github.com/torch/rocks/blob/master/index.html)
   
   - Luarocks comes with mandatory system command line tools under Windows.
 
