@@ -3,7 +3,10 @@ project(luarocks)
 CMAKE_MINIMUM_REQUIRED(VERSION 2.6 FATAL_ERROR)
 CMAKE_POLICY(VERSION 2.6)
 
-SET(INSTALL_INCLUDE_SUBDIR "include" CACHE STRING "installation include subdirectory name")
+IF (NOT INSTALL_INCLUDE_SUBDIR)
+ SET(INSTALL_INCLUDE_SUBDIR "include" CACHE STRING "installation include subdirectory name")
+ENDIF(NOT INSTALL_INCLUDE_SUBDIR)
+
 IF(WIN32)
   SET(INSTALL_BIN_SUBDIR "." CACHE STRING "installation executable subdirectory name")
   SET(INSTALL_LIB_SUBDIR "." CACHE STRING "installation library subdirectory name")
@@ -31,16 +34,16 @@ IF(WIN32)
     win32/bin/libintl3.dll win32/bin/libssl32.dll)
 
   INSTALL(FILES ${WINUTILS_DLL_FILES} DESTINATION "${INSTALL_BIN_SUBDIR}")
-   
+
   SET(WINUTILS_EXE_FILES
     win32/bin/7z.exe win32/bin/chmod.exe win32/bin/cp.exe
     win32/bin/find.exe win32/bin/ls.exe win32/bin/md5sum.exe
     win32/bin/mkdir.exe win32/bin/mv.exe win32/bin/objdump.exe
     win32/bin/pwd.exe win32/bin/rm.exe win32/bin/rmdir.exe
     win32/bin/test.exe win32/bin/uname.exe win32/bin/wget.exe)
-  
+
   INSTALL(PROGRAMS ${WINUTILS_EXE_FILES} DESTINATION "${INSTALL_BIN_SUBDIR}")
-    
+
   SET(WGET_EXECUTABLE_NAME "wget")
   SET(MD5_EXECUTABLE_NAME "md5sum")
   SET(UNAME_M "x64")
@@ -52,7 +55,7 @@ IF(WIN32)
 ELSE()
   FIND_PACKAGE(Wget)
   FIND_PACKAGE(MD5)
-  
+
   IF(NOT WGET_FOUND)
     FIND_PROGRAM(CURL_EXECUTABLE curl)
     IF(CURL_EXECUTABLE)
@@ -62,7 +65,7 @@ ELSE()
       MESSAGE(FATAL_ERROR "Downloader wget or curl not found")
     ENDIF()
   ENDIF()
-  
+
   IF(NOT MD5_FOUND)
     MESSAGE(FATAL_ERROR "MD5 checker not found")
   ENDIF()

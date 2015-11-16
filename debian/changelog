@@ -1,0 +1,9 @@
+luajit-rocks (1.0.2) UNRELEASED; urgency=medium
+
+  * Minor updates to the package
+
+ -- Boris Fomitchev <bfomitchev@nvidia.com>  Thu, 19 Nov 2015 12:45:58 -0800
+
+luajit-rocks (1.0.1) trusty; urgency=medium
+  * Initial release.
+ -- Boris Fomitchev <bfomitchev@nvidia.com>  Mon, 16 Nov 2015 12:22:59 -0800

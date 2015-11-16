@@ -1,0 +1,26 @@
+Source: luajit-rocks
+Section: universe/interpreters
+Maintainer: Soumith Chintala <soumith@fb.com>
+Priority: optional
+Build-depends: debhelper(>=9), cmake, git-core, luajit, wget, zip
+Vcs-Browser: https://github.com/keplerproject/luarocks
+Homepage: https://luarocks.org/
+Standards-Version: 3.9.5
+
+
+Package: luajit-rocks
+Architecture: all
+Depends: ${misc:Depends}, luajit, libluajit-5.1-2
+Conflicts: luarocks
+Description: This package contains LuaRocks, a tool for managing rocks.  A Lua rock is a
+ bundle containing a module and some metadata like compilation instructions and
+ copyright. The command line utility luarocks can download, build, install and
+ remove rocks, properly handling dependencies among them and allowing multiple
+ versions of the same rock to coexist.
+ .
+ The tool installs system-wide rocks in /usr/local when run by the superuser,
+ but a regular user can easily tune it to install rocks in his home directory.
+ .
+ This package also provides the luarocks-admin tool, needed to create a rocks
+ repository, and the documentation for luarocks, describing the command line
+ tools as well as the library to manipulate rocks.

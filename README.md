@@ -1,14 +1,12 @@
-CMake-based LuaJIT + Luarocks
+LuaJIT-based Luarocks
 =============================
 
 # What's the point? #
 
-We want to provide an easy to way to users for installing _recent_ versions
-of LuaJIT (or Lua) and luarocks, with almost no efforts.
+We want to provide an easy to way to users for installing recent luarocks, with absolutely no efforts.
 
-The provided LuaJIT (or Lua) and luarocks point to their respective git
-repository. We did not make any changes, except the compilation and
-installation processes.
+The provided luarocks points to their respective git repository. 
+We did not make any changes, except the compilation and installation processes.
 
 In addition,
   - Luarocks (or Lua) will be installed at the same location as LuaJIT and will know
@@ -27,35 +25,9 @@ In addition,
 
 Install [CMake](http://cmake.org) on your system.
 
-Get a C compiler. For Windows, we recommend the
-[Windows SDK](http://msdn.microsoft.com/en-us/windowsserver/bb980924.aspx). It
-is free, it has no GUI, but it is just fine with CMake.
+For Debian-based systens:
+Using apt-get or dpkg, install .deb file from export/ directory.
 
-# Installation
+Otherwise: 
 
-```sh
-git clone https://github.com/torch/luajit-rocks.git
-cd luajit-rocks
-mkdir build
-cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=/your/prefix
-```
-
-Then under Unix systems:
-```sh
-make install
-```
-
-Under Windows:
-```sh
-nmake install
-```
-
-Note: we do not recommend (nor we support) installation under Cygwin.
-
-## Additional CMake flags
-
-  - If you prefer vanilla Lua 5.1 instead of LuaJIT, use `-DWITH_LUA51=ON`
-  - If you prefer vanilla Lua 5.1 with reference counting instead of LuaJIT, use `-DWITH_LUA51RC=ON` (*experimental*)
-  - If you prefer vanilla Lua 5.2 instead of LuaJIT, use `-DWITH_LUA52=ON`
-  - If you prefer LuaJIT 2.1 instead of LuaJIT 2.0, use `-DWITH_LUAJIT21=ON`
+!!! Switch to the 'master' branch of this repo and follow its README.md !!!

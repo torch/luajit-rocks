@@ -539,14 +539,14 @@ local redirect_protocols = {
 
 local function request(url, method, http, loop_control)
    local result = {}
-   
+
    local proxy = cfg.proxy
    if type(proxy) ~= "string" then proxy = nil end
    -- LuaSocket's http.request crashes when given URLs missing the scheme part.
    if proxy and not proxy:find("://") then
       proxy = "http://" .. proxy
    end
-   
+
    if cfg.show_downloads then
       io.write(method.." "..url.." ...\n")
    end
@@ -648,7 +648,7 @@ function fs_lua.download(url, filename, cache)
    assert(type(filename) == "string" or not filename)
 
    filename = fs.absolute_name(filename or dir.base_name(url))
-   
+
    local content, err, https_err
    if util.starts_with(url, "http:") then
       content, err, https_err = http_request(url, http, cache and filename)
@@ -795,7 +795,7 @@ function fs_lua.check_command_permissions(flags)
    local ok = true
    local err = ""
    for _, dir in ipairs { cfg.rocks_dir, root_dir } do
-      if fs.exists(dir) and not fs.is_writable(dir) then
+      if fs.exists(dir) and (not fs.is_writable(dir)) then
          ok = false
          err = "Your user does not have write permissions in " .. dir
          break
@@ -828,7 +828,7 @@ function fs_lua.is_lua(name)
   local lua = fs.Q(dir.path(cfg.variables["LUA_BINDIR"], cfg.lua_interpreter))  -- get lua interpreter configured
   -- execute on configured interpreter, might not be the same as the interpreter LR is run on
   local result = fs.execute_string(lua..[[ -e "if loadfile(']]..name..[[') then os.exit() else os.exit(1) end"]])
-  return (result == true) 
+  return (result == true)
 end
 
 return fs_lua
