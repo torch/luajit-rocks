@@ -41,7 +41,7 @@ local wline, werror, wfatal, wwarn
 local action_names = {
   "STOP", "SECTION", "ESC", "REL_EXT",
   "ALIGN", "REL_LG", "LABEL_LG",
-  "REL_PC", "LABEL_PC", "IMM",
+  "REL_PC", "LABEL_PC", "IMM", "IMMSH"
 }
 
 -- Maximum number of section buffer positions for dasm_put().
@@ -230,8 +230,18 @@ local map_cond = {
 
 ------------------------------------------------------------------------------
 
+local map_op, op_template
+
+local function op_alias(opname, f)
+  return function(params, nparams)
+    if not params then return "-> "..opname:sub(1, -3) end
+    f(params, nparams)
+    op_template(params, map_op[opname], nparams)
+  end
+end
+
 -- Template strings for PPC instructions.
-local map_op = {
+map_op = {
   tdi_3 =	"08000000ARI",
   twi_3 =	"0c000000ARI",
   mulli_3 =	"1c000000RRI",
@@ -247,9 +257,11 @@ local map_op = {
   addic_3 =	"30000000RRI",
   ["addic._3"] = "34000000RRI",
   addi_3 =	"38000000RR0I",
+  addil_3 =	"38000000RR0J",
   li_2 =	"38000000RI",
   la_2 =	"38000000RD",
   addis_3 =	"3c000000RR0I",
+  addisl_3 =	"3c000000RR0J",
   lis_2 =	"3c000000RI",
   lus_2 =	"3c000000RU",
   bc_3 =	"40000000AAK",
@@ -298,6 +310,33 @@ local map_op = {
   lwa_2 =	"e8000002RD",
   std_2 =	"f8000000RD",
   stdu_2 =	"f8000001RD",
+
+  subi_3 =	op_alias("addi_3", function(p) p[3] = "-("..p[3]..")" end),
+  subis_3 =	op_alias("addis_3", function(p) p[3] = "-("..p[3]..")" end),
+  subic_3 =	op_alias("addic_3", function(p) p[3] = "-("..p[3]..")" end),
+  ["subic._3"] = op_alias("addic._3", function(p) p[3] = "-("..p[3]..")" end),
+
+  rotlwi_3 =	op_alias("rlwinm_5", function(p)
+    p[4] = "0"; p[5] = "31"
+  end),
+  rotrwi_3 =	op_alias("rlwinm_5", function(p)
+    p[3] = "32-("..p[3]..")"; p[4] = "0"; p[5] = "31"
+  end),
+  rotlw_3 =	op_alias("rlwnm_5", function(p)
+    p[4] = "0"; p[5] = "31"
+  end),
+  slwi_3 =	op_alias("rlwinm_5", function(p)
+    p[5] = "31-("..p[3]..")"; p[4] = "0"
+  end),
+  srwi_3 =	op_alias("rlwinm_5", function(p)
+    p[4] = p[3]; p[3] = "32-("..p[3]..")"; p[5] = "31"
+  end),
+  clrlwi_3 =	op_alias("rlwinm_5", function(p)
+    p[4] = p[3]; p[3] = "0"; p[5] = "31"
+  end),
+  clrrwi_3 =	op_alias("rlwinm_5", function(p)
+    p[5] = "31-("..p[3]..")"; p[3] = "0"; p[4] = "0"
+  end),
 
   -- Primary opcode 4:
   mulhhwu_3 =		"10000010RRR.",
@@ -727,7 +766,7 @@ local map_op = {
   lfddx_3 =	"7c000646FRR",
   stvepx_3 =	"7c00064eVRR",
   srawi_3 =	"7c000670RR~A.",
-  sradi_3 =	"7c000674RR~H.",
+  sradi_3 =	"7c000674RR~f.",
   eieio_0 =	"7c0006ac",
   lfiwax_3 =	"7c0006aeFR0R",
   divdeuo_3 =	"7c000712RRR.",
@@ -789,6 +828,28 @@ local map_op = {
   rldimi_4 =	"7800000cRR~HM.",
   rldcl_4 =	"78000010RR~RM.",
   rldcr_4 =	"78000012RR~RM.",
+
+  rotldi_3 =	op_alias("rldicl_4", function(p)
+    p[4] = "0"
+  end),
+  rotrdi_3 =	op_alias("rldicl_4", function(p)
+    p[3] = "64-("..p[3]..")"; p[4] = "0"
+  end),
+  rotld_3 =	op_alias("rldcl_4", function(p)
+    p[4] = "0"
+  end),
+  sldi_3 =	op_alias("rldicr_4", function(p)
+    p[4] = "63-("..p[3]..")"
+  end),
+  srdi_3 =	op_alias("rldicl_4", function(p)
+    p[4] = p[3]; p[3] = "64-("..p[3]..")"
+  end),
+  clrldi_3 =	op_alias("rldicl_4", function(p)
+    p[4] = p[3]; p[3] = "0"
+  end),
+  clrrdi_3 =	op_alias("rldicr_4", function(p)
+    p[4] = "63-("..p[3]..")"; p[3] = "0"
+  end),
 
   -- Primary opcode 56:
   lq_2 =	"e0000000R:D", -- NYI: displacement must be divisible by 8.
@@ -1358,7 +1419,7 @@ local map_op = {
 do
   local t = {}
   for k,v in pairs(map_op) do
-    if sub(v, -1) == "." then
+    if type(v) == "string" and sub(v, -1) == "." then
       local v2 = sub(v, 1, 7)..char(byte(v, 8)+1)..sub(v, 9, -2)
       t[sub(k, 1, -3).."."..sub(k, -2)] = v2
     end
@@ -1454,8 +1515,30 @@ local function parse_cond(expr)
   werror("bad condition bit name `"..expr.."'")
 end
 
+local parse_ctx = {}
+
+local loadenv = setfenv and function(s)
+  local code = loadstring(s, "")
+  if code then setfenv(code, parse_ctx) end
+  return code
+end or function(s)
+  return load(s, "", nil, parse_ctx)
+end
+
+-- Try to parse simple arithmetic, too, since some basic ops are aliases.
+local function parse_number(n)
+  local x = tonumber(n)
+  if x then return x end
+  local code = loadenv("return "..n)
+  if code then
+    local ok, y = pcall(code)
+    if ok then return y end
+  end
+  return nil
+end
+
 local function parse_imm(imm, bits, shift, scale, signed)
-  local n = tonumber(imm)
+  local n = parse_number(imm)
   if n then
     local m = sar(n, scale)
     if shl(m, scale) == n then
@@ -1479,11 +1562,11 @@ local function parse_imm(imm, bits, shift, scale, signed)
 end
 
 local function parse_shiftmask(imm, isshift)
-  local n = tonumber(imm)
+  local n = parse_number(imm)
   if n then
     if shr(n, 6) == 0 then
-      local lsb = band(imm, 31)
-      local msb = imm - lsb
+      local lsb = band(n, 31)
+      local msb = n - lsb
       return isshift and (shl(lsb, 11)+shr(msb, 4)) or (shl(lsb, 6)+msb)
     end
     werror("out of range immediate `"..imm.."'")
@@ -1491,7 +1574,8 @@ local function parse_shiftmask(imm, isshift)
 	 match(imm, "^([%w_]+):(r[1-3]?[0-9])$") then
     werror("expected immediate operand, got register")
   else
-    werror("NYI: parameterized 64 bit shift/mask")
+    waction("IMMSH", isshift and 1 or 0, imm)
+    return 0;
   end
 end
 
@@ -1566,7 +1650,7 @@ end
 ------------------------------------------------------------------------------
 
 -- Handle opcodes defined with template strings.
-map_op[".template__"] = function(params, template, nparams)
+op_template = function(params, template, nparams)
   if not params then return sub(template, 9) end
   local op = tonumber(sub(template, 1, 8), 16)
   local n, rs = 1, 26
@@ -1636,7 +1720,27 @@ map_op[".template__"] = function(params, template, nparams)
     elseif p == "G" then
       op = op + parse_imm(params[n], 8, 12, 0, false); n = n + 1
     elseif p == "H" then
-      op = op + parse_shiftmask(params[n], true); n = n + 1
+      v = parse_imm(params[n], 6, 0, 0, false);
+      op = op + shl(band(v,31), 11)+shl(shr(v,5), 1);
+      n = n + 1;
+      --op = op + parse_shiftmask(params[n], true); n = n + 1
+    elseif p == "L" then
+      v = tonumber(params[n]);
+      z = 63 - v;
+      op = op + shl(band(v,31), 11)+shl(shr(v,5), 1);
+      msb = shr(band(z,32),5);
+      r = shl(band(z,31),1);
+      op = op + shl((msb + r), 5); n = n + 1;
+    elseif p == "u" then
+      v = tonumber(params[n]);
+      z = 64 - v;
+      op = op + shl(band(z,31), 11)+shl(shr(z,5), 1);
+      msb = shr(band(v,32),5);
+      r = shl(band(v,31),1);
+      op = op + shl((msb + r), 5); n = n + 1;
+    elseif p == "f" then
+      v = tonumber(params[n]);
+      op = op + shl(band(v,31), 11)+shl(shr(v,5), 1);
     elseif p == "M" then
       op = op + parse_shiftmask(params[n], false); n = n + 1
     elseif p == "J" or p == "K" then
@@ -1667,6 +1771,8 @@ map_op[".template__"] = function(params, template, nparams)
   end
   wputpos(pos, op)
 end
+
+map_op[".template__"] = op_template
 
 ------------------------------------------------------------------------------
 

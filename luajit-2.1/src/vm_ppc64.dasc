@@ -1,4 +1,4 @@
-|// Low-level VM code for PowerPC 32 bit or 32on64 bit mode.
+|// Low-level VM code for PPC64 CPUs.
 |// Bytecode interpreter, fast functions and helper functions.
 |// Copyright (C) 2005-2015 Mike Pall. See Copyright Notice in luajit.h
 |
@@ -13,89 +13,25 @@
 |// Note: The ragged indentation of the instructions is intentional.
 |//       The starting columns indicate data dependencies.
 |
-|//-----------------------------------------------------------------------
-|
-|// DynASM defines used by the PPC port:
-|//
-|// P64     64 bit pointers (only for GPR64 testing).
-|//         Note: see vm_ppc64.dasc for a full PPC64 _LP64 port.
-|// GPR64   64 bit registers (but possibly 32 bit pointers, e.g. PS3).
-|//         Affects reg saves, stack layout, carry/overflow/dot flags etc.
-|// FRAME32 Use 32 bit frame layout, even with GPR64 (Xbox 360).
-|// TOC     Need table of contents (64 bit or 32 bit variant, e.g. PS3).
-|//         Function pointers are really a struct: code, TOC, env (optional).
-|// TOCENV  Function pointers have an environment pointer, too (not on PS3).
-|// PPE     Power Processor Element of Cell (PS3) or Xenon (Xbox 360).
-|//         Must avoid (slow) micro-coded instructions.
-|
-|.if P64
-|.define TOC, 1
-|.define TOCENV, 1
-|.macro lpx, a, b, c; ldx a, b, c; .endmacro
-|.macro lp, a, b; ld a, b; .endmacro
-|.macro stp, a, b; std a, b; .endmacro
-|.define decode_OPP, decode_OP8
-|.if FFI
-|// Missing: Calling conventions, 64 bit regs, TOC.
-|.error lib_ffi not yet implemented for PPC64
-|.endif
-|.else
-|.macro lpx, a, b, c; lwzx a, b, c; .endmacro
-|.macro lp, a, b; lwz a, b; .endmacro
-|.macro stp, a, b; stw a, b; .endmacro
-|.define decode_OPP, decode_OP4
-|.endif
-|
 |// Convenience macros for TOC handling.
-|.if TOC
-|// Linker needs a TOC patch area for every external call relocation.
-|.macro blex, target; bl extern target@plt; nop; .endmacro
-|.macro .toc, a, b; a, b; .endmacro
-|.if P64
-|.define TOC_OFS,	 8
-|.define ENV_OFS,	16
-|.else
-|.define TOC_OFS,	4
-|.define ENV_OFS,	8
-|.endif
-|.else  // No TOC.
-|.macro blex, target; bl extern target@plt; .endmacro
-|.macro .toc, a, b; .endmacro
-|.endif
-|.macro .tocenv, a, b; .if TOCENV; a, b; .endif; .endmacro
-|
-|.macro .gpr64, a, b; .if GPR64; a, b; .endif; .endmacro
-|
-|.macro andix., y, a, i
-|.if PPE
-|  rlwinm y, a, 0, 31-lj_fls(i), 31-lj_ffs(i)
-|  cmpwi y, 0
-|.else
-|  andi. y, a, i
-|.endif
+|.macro blex, target
+|  bl extern target@got		// ld 12, target@got(2)
+|  mtctr r12
+|  bctrl
+|//It is require to restore the TOC register after a function call
+|//once the linker will not imply a function from mtctr; bctrl; pair
+|//it is required to perform such step manually in this macro
+|  ld TOCREG, SAVE_TOC
 |.endmacro
 |
-|.macro clrso, reg
-|.if PPE
-|  li reg, 0
-|  mtxer reg
-|.else
-|  mcrxr cr0
-|.endif
+|.macro pic_code_setup, target_name
+|  addisl r2, r12, extern .TOC.-lj_..target_name@ha
+|  addil  r2, r2,  extern .TOC.-lj_..target_name@l
 |.endmacro
 |
-|.macro checkov, reg, noov
-|.if PPE
-|  mfxer reg
-|  add reg, reg, reg
-|  cmpwi reg, 0
-|   li reg, 0
-|   mtxer reg
-|  bgey noov
-|.else
+|.macro checkov, noov
 |  mcrxr cr0
 |  bley noov
-|.endif
 |.endmacro
 |
 |//-----------------------------------------------------------------------
@@ -113,7 +49,7 @@
 |.define JGL,		r31	// On-trace: global_State + 32768.
 |
 |// Constants for type-comparisons, stores and conversions. C callee-save.
-|.define TISNUM,	r22
+|.define TISNUM,	r22	// Constant LJ_TISNUM << 47.
 |.define TISNIL,	r23
 |.define ZERO,		r24
 |.define TOBIT,		f30	// 2^52 + 2^51.
@@ -130,6 +66,8 @@
 |.define TMP1,		r8
 |.define TMP2,		r9
 |.define TMP3,		r6	// Overlaps CARG4.
+|.define TMP4,		r25	// reserved for check.* macros
+|.define TMP5,		r26	// reserved for check.* macros
 |
 |// Saved temporaries.
 |.define SAVE0,		r21
@@ -151,154 +89,63 @@
 |.define ENVREG,	r11	// Environment pointer (nested C functions).
 |
 |// Stack layout while in interpreter. Must match with lj_frame.h.
-|.if GPR64
-|.if FRAME32
 |
-|//			456(sp) // \ 32/64 bit C frame info
-|.define TONUM_LO,	452(sp) // |
-|.define TONUM_HI,	448(sp) // |
-|.define TMPD_LO,	444(sp) // |
-|.define TMPD_HI,	440(sp) // |
-|.define SAVE_CR,	432(sp) // | 64 bit CR save.
-|.define SAVE_ERRF,	424(sp) //  > Parameter save area.
-|.define SAVE_NRES,	420(sp) // |
-|.define SAVE_L,	416(sp) // |
-|.define SAVE_PC,	412(sp) // |
-|.define SAVE_MULTRES,	408(sp) // |
-|.define SAVE_CFRAME,	400(sp) // / 64 bit C frame chain.
-|//			392(sp) // Reserved.
-|.define CFRAME_SPACE,	384     // Delta for sp.
-|// Back chain for sp:	384(sp) <-- sp entering interpreter
-|.define SAVE_LR,	376(sp) // 32 bit LR stored in hi-part.
-|.define SAVE_GPR_,	232     // .. 232+18*8: 64 bit GPR saves.
-|.define SAVE_FPR_,	88      // .. 88+18*8: 64 bit FPR saves.
-|//			80(sp) // Needed for 16 byte stack frame alignment.
-|//			16(sp)  // Callee parameter save area (ABI mandated).
-|//			8(sp)   // Reserved
-|// Back chain for sp:	0(sp)   <-- sp while in interpreter
-|// 32 bit sp stored in hi-part of 0(sp).
-|
-|.define TMPD_BLO,	447(sp)
-|.define TMPD,		TMPD_HI
-|.define TONUM_D,	TONUM_HI
-|
-|.else
-|
-|//			508(sp) // \ 32 bit C frame info.
-|.define SAVE_ERRF,	472(sp) // |
-|.define SAVE_NRES,	468(sp) // |
-|.define SAVE_L,	464(sp) //  > Parameter save area.
-|.define SAVE_PC,	460(sp) // |
-|.define SAVE_MULTRES,	456(sp) // |
-|.define SAVE_CFRAME,	448(sp) // / 64 bit C frame chain.
 |.define SAVE_LR,	416(sp)
-|.define CFRAME_SPACE,	400     // Delta for sp.
-|// Back chain for sp:	400(sp) <-- sp entering interpreter
-|.define SAVE_FPR_,	256     // .. 256+18*8: 64 bit FPR saves.
-|.define SAVE_GPR_,	112     // .. 112+18*8: 64 bit GPR saves.
-|//			48(sp)  // Callee parameter save area (ABI mandated).
-|.define SAVE_TOC,	40(sp)  // TOC save area.
-|.define TMPD_LO,	36(sp)  // \ Link editor temp (ABI mandated).
-|.define TMPD_HI,	32(sp)  // /
-|.define TONUM_LO,	28(sp)  // \ Compiler temp (ABI mandated).
-|.define TONUM_HI,	24(sp)  // /
+|.define CFRAME_SPACE,	400	// Delta for sp.
+|// Back chain for sp:	400(sp)	<-- sp entering interpreter
+|.define SAVE_FPR_,	256	// .. 256+18*8: 64 bit FPR saves.
+|.define SAVE_GPR_,	112	// .. 112+18*8: 64 bit GPR saves.
+|//			92(sp)	// \ 32 bit C frame info.
+|.define SAVE_ERRF,	88(sp)	// |
+|.define SAVE_NRES,	80(sp)	// |
+|.define SAVE_L,	72(sp)	//  > Parameter save area.
+|.define SAVE_PC,	64(sp)	// |
+|.define SAVE_MULTRES,	56(sp)	// |
+|.define SAVE_CFRAME,	48(sp)	// / 64 bit C frame chain.
+|.define TMPD_HI,	44(sp)	// \ Link editor temp (ABI mandated).
+|.define TMPD_LO,	40(sp)	// /
+|.define TONUM_HI,	36(sp)	// \ Compiler temp (ABI mandated).
+|.define TONUM_LO,	32(sp)	// /
+|//			32(sp)	// Callee parameter save area (ABI mandated).
+|.define SAVE_TOC,	24(sp)	// TOC save area.
 |// Next frame lr:	16(sp)
-|.define SAVE_CR,	8(sp)  // 64 bit CR save.
-|// Back chain for sp:	0(sp)	<-- sp while in interpreter
+|.define SAVE_CR,	8(sp)	// 64 bit CR save.
+|// Back chain for sp:	0(sp) 	<-- sp while in interpreter
 |
-|.define TMPD_BLO,	39(sp)
-|.define TMPD,		TMPD_HI
-|.define TONUM_D,	TONUM_HI
-|
-|.endif
-|.else
-|
-|.define SAVE_LR,	276(sp)
-|.define CFRAME_SPACE,	272     // Delta for sp.
-|// Back chain for sp:	272(sp) <-- sp entering interpreter
-|.define SAVE_FPR_,	128     // .. 128+18*8: 64 bit FPR saves.
-|.define SAVE_GPR_,	56      // .. 56+18*4: 32 bit GPR saves.
-|.define SAVE_CR,	52(sp)  // 32 bit CR save.
-|.define SAVE_ERRF,	48(sp)  // 32 bit C frame info.
-|.define SAVE_NRES,	44(sp)
-|.define SAVE_CFRAME,	40(sp)
-|.define SAVE_L,	36(sp)
-|.define SAVE_PC,	32(sp)
-|.define SAVE_MULTRES,	28(sp)
-|.define UNUSED1,	24(sp)
-|.define TMPD_LO,	20(sp)
-|.define TMPD_HI,	16(sp)
-|.define TONUM_LO,	12(sp)
-|.define TONUM_HI,	8(sp)
-|// Next frame lr:	4(sp)
-|// Back chain for sp:	0(sp)	<-- sp while in interpreter
-|
-|.define TMPD_BLO,	23(sp)
-|.define TMPD,		TMPD_HI
-|.define TONUM_D,	TONUM_HI
-|
-|.endif
+|.define TMPD_BLO,	40(sp)	// LSB
+|.define TMPD,		TMPD_LO	// base address of TMPD doubleword
+|.define TONUM_D,	TONUM_LO// base address of TONUM doubleword
 |
 |.macro save_, reg
-|.if GPR64
 |  std r..reg, SAVE_GPR_+(reg-14)*8(sp)
-|.else
-|  stw r..reg, SAVE_GPR_+(reg-14)*4(sp)
-|.endif
 |  stfd f..reg, SAVE_FPR_+(reg-14)*8(sp)
 |.endmacro
 |.macro rest_, reg
-|.if GPR64
 |  ld r..reg, SAVE_GPR_+(reg-14)*8(sp)
-|.else
-|  lwz r..reg, SAVE_GPR_+(reg-14)*4(sp)
-|.endif
 |  lfd f..reg, SAVE_FPR_+(reg-14)*8(sp)
 |.endmacro
 |
 |.macro saveregs
-|.if GPR64 and not FRAME32
 |  stdu sp, -CFRAME_SPACE(sp)
-|.else
-|  stwu sp, -CFRAME_SPACE(sp)
-|.endif
 |  save_ 14; save_ 15; save_ 16
 |  mflr r0
 |  save_ 17; save_ 18; save_ 19; save_ 20; save_ 21; save_ 22
-|.if GPR64 and not FRAME32
 |  std r0, SAVE_LR
-|.else
-|  stw r0, SAVE_LR
-|.endif
 |  save_ 23; save_ 24; save_ 25
 |  mfcr r0
 |  save_ 26; save_ 27; save_ 28; save_ 29; save_ 30; save_ 31
-|.if GPR64
 |  std r0, SAVE_CR
-|.else
-|  stw r0, SAVE_CR
-|.endif
-|  .toc std TOCREG, SAVE_TOC
+|  std TOCREG, SAVE_TOC
 |.endmacro
 |
 |.macro restoreregs
-|.if GPR64 and not FRAME32
 |  ld r0, SAVE_LR
-|.else
-|  lwz r0, SAVE_LR
-|.endif
-|.if GPR64
 |  ld r12, SAVE_CR
-|.else
-|  lwz r12, SAVE_CR
-|.endif
 |  rest_ 14; rest_ 15; rest_ 16; rest_ 17; rest_ 18; rest_ 19
-|  mtlr r0;
-|.if PPE; mtocrf 0x20, r12; .else; mtcrf 0x38, r12; .endif
+|  mtlr r0
+|  mtcrf 0xff, r12
 |  rest_ 20; rest_ 21; rest_ 22; rest_ 23; rest_ 24; rest_ 25
-|.if PPE; mtocrf 0x10, r12; .endif
 |  rest_ 26; rest_ 27; rest_ 28; rest_ 29; rest_ 30; rest_ 31
-|.if PPE; mtocrf 0x08, r12; .endif
 |  addi sp, sp, CFRAME_SPACE
 |.endmacro
 |
@@ -331,12 +178,6 @@
 |  fsub freg, freg, TONUM
 |.endmacro
 |
-|.macro tonum_u, freg, reg
-|  stw reg, TONUM_LO
-|  lfd freg, TONUM_D
-|  fsub freg, freg, TOBIT
-|.endmacro
-|
 |.macro toint, reg, freg, tmpfreg
 |  fctiwz tmpfreg, freg
 |  stfd tmpfreg, TMPD
@@ -351,17 +192,16 @@
 |
 |// Access to frame relative to BASE.
 |.define FRAME_PC,	-8
-|.define FRAME_FUNC,	-4
+|.define FRAME_FUNC,	-16
 |
 |// Instruction decode.
-|.macro decode_OP4, dst, ins; rlwinm dst, ins, 2, 22, 29; .endmacro
-|.macro decode_OP8, dst, ins; rlwinm dst, ins, 3, 21, 28; .endmacro
+|.macro decode_OP8, dst, ins; rlwinm dst, ins,  3, 21, 28; .endmacro
 |.macro decode_RA8, dst, ins; rlwinm dst, ins, 27, 21, 28; .endmacro
 |.macro decode_RB8, dst, ins; rlwinm dst, ins, 11, 21, 28; .endmacro
 |.macro decode_RC8, dst, ins; rlwinm dst, ins, 19, 21, 28; .endmacro
 |.macro decode_RD8, dst, ins; rlwinm dst, ins, 19, 13, 28; .endmacro
 |
-|.macro decode_OP1, dst, ins; rlwinm dst, ins, 0, 24, 31; .endmacro
+|.macro decode_OP1, dst, ins; rlwinm dst, ins,  0, 24, 31; .endmacro
 |.macro decode_RD4, dst, ins; rlwinm dst, ins, 18, 14, 29; .endmacro
 |
 |// Instruction fetch.
@@ -371,8 +211,8 @@
 |.endmacro
 |// Instruction decode+dispatch. Note: optimized for e300!
 |.macro ins_NEXT2
-|  decode_OPP TMP1, INS
-|  lpx TMP0, DISPATCH, TMP1
+|  decode_OP8 TMP1, INS
+|  ldx TMP0, DISPATCH, TMP1
 |  mtctr TMP0
 |   decode_RB8 RB, INS
 |   decode_RD8 RD, INS
@@ -412,12 +252,12 @@
 |// Call decode and dispatch.
 |.macro ins_callt
 |  // BASE = new base, RB = LFUNC/CFUNC, RC = nargs*8, FRAME_PC(BASE) = PC
-|  lwz PC, LFUNC:RB->pc
+|  ld PC, LFUNC:RB->pc
 |  lwz INS, 0(PC)
 |   addi PC, PC, 4
-|  decode_OPP TMP1, INS
+|  decode_OP8 TMP1, INS
 |   decode_RA8 RA, INS
-|  lpx TMP0, DISPATCH, TMP1
+|  ldx TMP0, DISPATCH, TMP1
 |   add RA, RA, BASE
 |  mtctr TMP0
 |  bctr
@@ -425,22 +265,97 @@
 |
 |.macro ins_call
 |  // BASE = new base, RB = LFUNC/CFUNC, RC = nargs*8, PC = caller PC
-|  stw PC, FRAME_PC(BASE)
+|  std PC, FRAME_PC(BASE)
 |  ins_callt
 |.endmacro
 |
 |//-----------------------------------------------------------------------
 |
 |// Macros to test operand types.
-|.macro checknum, reg; cmplw reg, TISNUM; .endmacro
-|.macro checknum, cr, reg; cmplw cr, reg, TISNUM; .endmacro
-|.macro checkstr, reg; cmpwi reg, LJ_TSTR; .endmacro
-|.macro checktab, reg; cmpwi reg, LJ_TTAB; .endmacro
-|.macro checkfunc, reg; cmpwi reg, LJ_TFUNC; .endmacro
-|.macro checknil, reg; cmpwi reg, LJ_TNIL; .endmacro
+|.macro get_oper_type, dst, reg
+|  sradi dst, reg, 47
+|.endmacro
+|
+|.macro set_oper_type, dst, reg
+|  sldi dst, reg, 47
+|.endmacro
+|
+|.macro set_bool, reg, type; li TMP4, type; rotldi reg, TMP4, 47; .endmacro
+|
+|.macro add_oper_type, value, type
+|  clear_field value
+|  add value, value, type
+|.endmacro
+|
+|.macro clear_field, reg
+|  clrldi reg, reg, 17
+|.endmacro
+|
+|// clear bits 32-63 of 32-bit numbers and extend sign
+|.macro get_value, reg
+|  srawi reg, reg, 0
+|.endmacro
+|
+|.macro checktp, cr, reg, clear, cmp_type, cmp_arg
+|  get_oper_type TMP5, reg
+|  cmp_type cr, TMP5, cmp_arg
+|  clear reg
+|.endmacro
+|
+|.macro nop_arg, p; .endmacro
+|
+|.macro checknum_sig, reg
+|  li TMP4, LJ_TISNUM
+|  checktp cr0, reg, get_value, cmpd, TMP4
+|.endmacro
+|.macro checknum_sig, cr, reg
+|  li TMP4, LJ_TISNUM
+|  checktp cr, reg, get_value, cmpd, TMP4
+|.endmacro
+|.macro checknum, reg
+|  li TMP4, LJ_TISNUM
+|  checktp cr0, reg, get_value, cmpld, TMP4
+|.endmacro
+|.macro checknum, cr, reg
+|  li TMP4, LJ_TISNUM
+|  checktp cr, reg, get_value, cmpld, TMP4
+|.endmacro
+|.macro checkstr, reg
+|  li TMP4, LJ_TSTR
+|  checktp cr0, reg, clear_field, cmpd, TMP4
+|.endmacro
+|.macro checktab, reg
+|  li TMP4, LJ_TTAB
+|  checktp cr0, reg, clear_field, cmpd, TMP4
+|.endmacro
+|.macro checkfunc, reg
+|  li TMP4, LJ_TFUNC
+|  checktp cr0, reg, clear_field, cmpd, TMP4
+|.endmacro
+|.macro checkthread, reg
+|  li TMP4, LJ_TTHREAD
+|  checktp cr0, reg, clear_field, cmpd, TMP4
+|.endmacro
+|
+|.macro checknil_noclear, reg
+|  li TMP4, LJ_TNIL
+|  checktp cr0, reg, nop_arg, cmpd, TMP4
+|.endmacro
+|.macro checknum_noclear, reg
+|  li TMP4, LJ_TISNUM
+|  checktp cr0, reg, nop_arg, cmpld, TMP4
+|.endmacro
+|.macro checknum_noclear, cr, reg
+|  li TMP4, LJ_TISNUM
+|  checktp cr, reg, nop_arg, cmpld, TMP4
+|.endmacro
+|.macro checkfunc_noclear, reg
+|  li TMP4, LJ_TFUNC
+|  checktp cr0, reg, nop_arg, cmpd, TMP4
+|.endmacro
 |
 |.macro branch_RD
-|  srwi TMP0, RD, 1
+|  srdi TMP0, RD, 1
 |  addis PC, PC, -(BCBIAS_J*4 >> 16)
 |  add PC, PC, TMP0
 |.endmacro
@@ -452,12 +367,7 @@
 #define PC2PROTO(field)  ((int)offsetof(GCproto, field)-(int)sizeof(GCproto))
 |
 |.macro hotcheck, delta, target
-|  rlwinm TMP1, PC, 31, 25, 30
-|  addi TMP1, TMP1, GG_DISP2HOT
-|  lhzx TMP2, DISPATCH, TMP1
-|  addic. TMP2, TMP2, -delta
-|  sthx TMP2, DISPATCH, TMP1
-|  blt target
+| NYI
 |.endmacro
 |
 |.macro hotloop
@@ -470,16 +380,16 @@
 |
 |// Set current VM state. Uses TMP0.
 |.macro li_vmstate, st; li TMP0, ~LJ_VMST_..st; .endmacro
-|.macro st_vmstate; stw TMP0, DISPATCH_GL(vmstate)(DISPATCH); .endmacro
+|.macro st_vmstate; std TMP0, DISPATCH_GL(vmstate)(DISPATCH); .endmacro
 |
 |// Move table write barrier back. Overwrites mark and tmp.
 |.macro barrierback, tab, mark, tmp
-|  lwz tmp, DISPATCH_GL(gc.grayagain)(DISPATCH)
+|  ld tmp, DISPATCH_GL(gc.grayagain)(DISPATCH)
 |  // Assumes LJ_GC_BLACK is 0x04.
-|   rlwinm mark, mark, 0, 30, 28		// black2gray(tab)
-|  stw tab, DISPATCH_GL(gc.grayagain)(DISPATCH)
+|   rlwinm mark, mark, 0, 30, 28	// black2gray(tab)
+|  std tab, DISPATCH_GL(gc.grayagain)(DISPATCH)
 |   stb mark, tab->marked
-|  stw tmp, tab->gclist
+|  std tmp, tab->gclist
 |.endmacro
 |
 |//-----------------------------------------------------------------------
@@ -496,20 +406,20 @@ static void build_subroutines(BuildCtx *ctx)
   |
   |->vm_returnp:
   |  // See vm_return. Also: TMP2 = previous base.
-  |  andix. TMP0, PC, FRAME_P
-  |   li TMP1, LJ_TTRUE
+  |  andi. TMP0, PC, FRAME_P
+  |   set_bool TMP1, LJ_TTRUE
   |  beq ->cont_dispatch
   |
   |  // Return from pcall or xpcall fast func.
-  |  lwz PC, FRAME_PC(TMP2)		// Fetch PC of previous frame.
+  |  ld PC, FRAME_PC(TMP2)		// Fetch PC of previous frame.
   |  mr BASE, TMP2			// Restore caller base.
   |  // Prepending may overwrite the pcall frame, so do it at the end.
-  |   stwu TMP1, FRAME_PC(RA)		// Prepend true to results.
+  |   stdu TMP1, FRAME_PC(RA)		// Prepend true to results.
   |
   |->vm_returnc:
   |  addi RD, RD, 8			// RD = (nresults+1)*8.
-  |   andix. TMP0, PC, FRAME_TYPE
-  |  cmpwi cr1, RD, 0
+  |   andi. TMP0, PC, FRAME_TYPE
+  |  cmpdi cr1, RD, 0
   |  li CRET1, LUA_YIELD
   |  beq cr1, ->vm_unwind_c_eh
   |  mr MULTRES, RD
@@ -518,18 +428,21 @@ static void build_subroutines(BuildCtx *ctx)
   |->vm_return:
   |  // BASE = base, RA = resultptr, RD/MULTRES = (nresults+1)*8, PC = return
   |  // TMP0 = PC & FRAME_TYPE
-  |  cmpwi TMP0, FRAME_C
-  |   rlwinm TMP2, PC, 0, 0, 28
+  |  cmpdi TMP0, FRAME_C
+  |   li TMP4, FRAME_TYPEP
+  |   not TMP4, TMP4
   |    li_vmstate C
+  |   and TMP2, PC, TMP4
   |   sub TMP2, BASE, TMP2		// TMP2 = previous base.
   |  bney ->vm_returnp
   |
   |  addic. TMP1, RD, -8
-  |   stp TMP2, L->base
+  |   std TMP2, L->base
   |   lwz TMP2, SAVE_NRES
-  |    subi BASE, BASE, 8
+  |   extsw TMP2, TMP2
+  |    subi BASE, BASE, 16
   |    st_vmstate
-  |   slwi TMP2, TMP2, 3
+  |   sldi TMP2, TMP2, 3
   |  beq >2
   |1:
   |  addic. TMP1, TMP1, -8
@@ -540,15 +453,15 @@ static void build_subroutines(BuildCtx *ctx)
   |  bney <1
   |
   |2:
-  |  cmpw TMP2, RD			// More/less results wanted?
+  |  cmpd TMP2, RD			// More/less results wanted?
   |  bne >6
   |3:
-  |  stp BASE, L->top			// Store new top.
+  |  std BASE, L->top			// Store new top.
   |
   |->vm_leave_cp:
-  |  lp TMP0, SAVE_CFRAME		// Restore previous C frame.
+  |  ld TMP0, SAVE_CFRAME		// Restore previous C frame.
   |   li CRET1, 0			// Ok return status for vm_pcall.
-  |  stp TMP0, L->cframe
+  |  std TMP0, L->cframe
   |
   |->vm_leave_unw:
   |  restoreregs
@@ -557,10 +470,10 @@ static void build_subroutines(BuildCtx *ctx)
   |6:
   |  ble >7				// Less results wanted?
   |  // More results wanted. Check stack size and fill up results with nil.
-  |  lwz TMP1, L->maxstack
-  |  cmplw BASE, TMP1
+  |  ld TMP1, L->maxstack
+  |  cmpld BASE, TMP1
   |  bge >8
-  |  stw TISNIL, 0(BASE)
+  |  std TISNIL, 0(BASE)
   |  addi RD, RD, 8
   |  addi BASE, BASE, 8
   |  b <2
@@ -578,15 +491,15 @@ static void build_subroutines(BuildCtx *ctx)
   |  // - A C function grows the stack (a lot).
   |  // - The GC shrinks the stack in between.
   |  // - A return back from a lua_call() with (high) nresults adjustment.
-  |  stp BASE, L->top			// Save current top held in BASE (yes).
+  |  std BASE, L->top			// Save current top held in BASE (yes).
   |   mr SAVE0, RD
-  |  srwi CARG2, TMP2, 3
+  |  srdi CARG2, TMP2, 3
   |  mr CARG1, L
   |  bl extern lj_state_growstack	// (lua_State *L, int n)
-  |    lwz TMP2, SAVE_NRES
+  |    ld TMP2, SAVE_NRES
   |   mr RD, SAVE0
-  |    slwi TMP2, TMP2, 3
-  |  lp BASE, L->top			// Need the (realloced) L->top in BASE.
+  |    sldi TMP2, TMP2, 3
+  |  ld BASE, L->top			// Need the (realloced) L->top in BASE.
   |  b <2
   |
   |->vm_unwind_c:			// Unwind C stack, return from vm_pcall.
@@ -594,39 +507,36 @@ static void build_subroutines(BuildCtx *ctx)
   |  mr sp, CARG1
   |  mr CRET1, CARG2
   |->vm_unwind_c_eh:			// Landing pad for external unwinder.
-  |  lwz L, SAVE_L
-  |  .toc ld TOCREG, SAVE_TOC
+  |  ld L, SAVE_L
+  |  ld TOCREG, SAVE_TOC
   |   li TMP0, ~LJ_VMST_C
-  |  lwz GL:TMP1, L->glref
-  |   stw TMP0, GL:TMP1->vmstate
+  |  ld GL:TMP1, L->glref
+  |   std TMP0, GL:TMP1->vmstate
   |  b ->vm_leave_unw
   |
   |->vm_unwind_ff:			// Unwind C stack, return from ff pcall.
   |  // (void *cframe)
-  |.if GPR64
   |  rldicr sp, CARG1, 0, 61
-  |.else
-  |  rlwinm sp, CARG1, 0, 0, 29
-  |.endif
   |->vm_unwind_ff_eh:			// Landing pad for external unwinder.
-  |  lwz L, SAVE_L
-  |  .toc ld TOCREG, SAVE_TOC
+  |  ld L, SAVE_L
+  |  ld TOCREG, SAVE_TOC
   |     li TISNUM, LJ_TISNUM		// Setup type comparison constants.
-  |  lp BASE, L->base
+  |     set_oper_type TISNUM, TISNUM
+  |  ld BASE, L->base
   |     lus TMP3, 0x59c0		// TOBIT = 2^52 + 2^51 (float).
-  |   lwz DISPATCH, L->glref		// Setup pointer to dispatch table.
+  |   ld DISPATCH, L->glref		// Setup pointer to dispatch table.
   |     li ZERO, 0
-  |     stw TMP3, TMPD
-  |  li TMP1, LJ_TFALSE
+  |     std TMP3, TMPD
+  |  set_bool TMP1, LJ_TFALSE
   |     ori TMP3, TMP3, 0x0004		// TONUM = 2^52 + 2^51 + 2^31 (float).
   |     li TISNIL, LJ_TNIL
   |    li_vmstate INTERP
   |     lfs TOBIT, TMPD
-  |  lwz PC, FRAME_PC(BASE)		// Fetch PC of previous frame.
+  |  ld PC, FRAME_PC(BASE)		// Fetch PC of previous frame.
   |  la RA, -8(BASE)			// Results start at BASE-8.
-  |     stw TMP3, TMPD
+  |     std TMP3, TMPD
   |   addi DISPATCH, DISPATCH, GG_G2DISP
-  |  stw TMP1, 0(RA)			// Prepend false to error message.
+  |  std TMP1, 0(RA)			// Prepend false to error message.
   |  li RD, 16				// 2 results: false + error message.
   |    st_vmstate
   |     lfs TONUM, TMPD
@@ -644,19 +554,20 @@ static void build_subroutines(BuildCtx *ctx)
   |  // BASE = new base, RA = BASE+framesize*8, RC = nargs*8, PC = first PC
   |  add RC, BASE, RC
   |   sub RA, RA, BASE
-  |  stp BASE, L->base
+  |  std BASE, L->base
   |   addi PC, PC, 4			// Must point after first instruction.
-  |  stp RC, L->top
-  |   srwi CARG2, RA, 3
+  |  std RC, L->top
+  |   srdi CARG2, RA, 3
   |2:
   |  // L->base = new base, L->top = top
-  |   stw PC, SAVE_PC
+  |   std PC, SAVE_PC
   |  mr CARG1, L
   |  bl extern lj_state_growstack	// (lua_State *L, int n)
-  |  lp BASE, L->base
-  |  lp RC, L->top
-  |  lwz LFUNC:RB, FRAME_FUNC(BASE)
+  |  ld BASE, L->base
+  |  ld RC, L->top
+  |  ld LFUNC:RB, FRAME_FUNC(BASE)
   |  sub RC, RC, BASE
+  |  clear_field RB
   |  // BASE = new base, RB = LFUNC/CFUNC, RC = nargs*8, FRAME_PC(BASE) = PC
   |  ins_callt				// Just retry the call.
   |
@@ -668,42 +579,43 @@ static void build_subroutines(BuildCtx *ctx)
   |  // (lua_State *L, TValue *base, int nres1 = 0, ptrdiff_t ef = 0)
   |  saveregs
   |  mr L, CARG1
-  |    lwz DISPATCH, L->glref		// Setup pointer to dispatch table.
+  |    ld DISPATCH, L->glref		// Setup pointer to dispatch table.
   |  mr BASE, CARG2
   |    lbz TMP1, L->status
-  |   stw L, SAVE_L
+  |   std L, SAVE_L
   |  li PC, FRAME_CP
   |  addi TMP0, sp, CFRAME_RESUME
   |    addi DISPATCH, DISPATCH, GG_G2DISP
-  |   stw CARG3, SAVE_NRES
-  |    cmplwi TMP1, 0
-  |   stw CARG3, SAVE_ERRF
-  |   stp CARG3, SAVE_CFRAME
-  |   stw CARG1, SAVE_PC		// Any value outside of bytecode is ok.
-  |  stp TMP0, L->cframe
+  |   std CARG3, SAVE_NRES
+  |    cmpldi TMP1, 0
+  |   std CARG3, SAVE_ERRF
+  |   std CARG3, SAVE_CFRAME
+  |   std CARG1, SAVE_PC		// Any value outside of bytecode is ok.
+  |  std TMP0, L->cframe
   |    beq >3
   |
   |  // Resume after yield (like a return).
-  |  stw L, DISPATCH_GL(cur_L)(DISPATCH)
+  |  std L, DISPATCH_GL(cur_L)(DISPATCH)
   |  mr RA, BASE
-  |   lp BASE, L->base
+  |   ld BASE, L->base
   |     li TISNUM, LJ_TISNUM		// Setup type comparison constants.
-  |   lp TMP1, L->top
-  |  lwz PC, FRAME_PC(BASE)
+  |     set_oper_type TISNUM, TISNUM
+  |   ld TMP1, L->top
+  |  ld PC, FRAME_PC(BASE)
   |     lus TMP3, 0x59c0		// TOBIT = 2^52 + 2^51 (float).
   |    stb CARG3, L->status
-  |     stw TMP3, TMPD
+  |     std TMP3, TMPD
   |     ori TMP3, TMP3, 0x0004		// TONUM = 2^52 + 2^51 + 2^31 (float).
   |     lfs TOBIT, TMPD
   |   sub RD, TMP1, BASE
-  |     stw TMP3, TMPD
+  |     std TMP3, TMPD
   |     lus TMP0, 0x4338		// Hiword of 2^52 + 2^51 (double)
   |   addi RD, RD, 8
   |     stw TMP0, TONUM_HI
   |    li_vmstate INTERP
   |     li ZERO, 0
   |    st_vmstate
-  |  andix. TMP0, PC, FRAME_TYPE
+  |  andi. TMP0, PC, FRAME_TYPE
   |   mr MULTRES, RD
   |     lfs TONUM, TMPD
   |     li TISNIL, LJ_TNIL
@@ -714,7 +626,7 @@ static void build_subroutines(BuildCtx *ctx)
   |  // (lua_State *L, TValue *base, int nres1, ptrdiff_t ef)
   |  saveregs
   |  li PC, FRAME_CP
-  |  stw CARG4, SAVE_ERRF
+  |  std CARG4, SAVE_ERRF
   |  b >1
   |
   |->vm_call:				// Setup C frame and enter VM.
@@ -723,22 +635,23 @@ static void build_subroutines(BuildCtx *ctx)
   |  li PC, FRAME_C
   |
   |1:  // Entry point for vm_pcall above (PC = ftype).
-  |  lp TMP1, L:CARG1->cframe
+  |  ld TMP1, L:CARG1->cframe
   |    mr L, CARG1
-  |   stw CARG3, SAVE_NRES
-  |    lwz DISPATCH, L->glref		// Setup pointer to dispatch table.
-  |   stw CARG1, SAVE_L
+  |   std CARG3, SAVE_NRES
+  |    ld DISPATCH, L->glref		// Setup pointer to dispatch table.
+  |   std CARG1, SAVE_L
   |     mr BASE, CARG2
   |    addi DISPATCH, DISPATCH, GG_G2DISP
-  |   stw CARG1, SAVE_PC		// Any value outside of bytecode is ok.
-  |  stp TMP1, SAVE_CFRAME
-  |  stp sp, L->cframe			// Add our C frame to cframe chain.
+  |   std CARG1, SAVE_PC		// Any value outside of bytecode is ok.
+  |  std TMP1, SAVE_CFRAME
+  |  std sp, L->cframe			// Add our C frame to cframe chain.
   |
   |3:  // Entry point for vm_cpcall/vm_resume (BASE = base, PC = ftype).
-  |  stw L, DISPATCH_GL(cur_L)(DISPATCH)
-  |  lp TMP2, L->base			// TMP2 = old base (used in vmeta_call).
+  |  std L, DISPATCH_GL(cur_L)(DISPATCH)
+  |  ld TMP2, L->base			// TMP2 = old base (used in vmeta_call).
   |     li TISNUM, LJ_TISNUM		// Setup type comparison constants.
-  |   lp TMP1, L->top
+  |     set_oper_type TISNUM, TISNUM
+  |   ld TMP1, L->top
   |     lus TMP3, 0x59c0		// TOBIT = 2^52 + 2^51 (float).
   |  add PC, PC, BASE
   |     stw TMP3, TMPD
@@ -757,9 +670,9 @@ static void build_subroutines(BuildCtx *ctx)
   |
   |->vm_call_dispatch:
   |  // TMP2 = old base, BASE = new base, RC = nargs*8, PC = caller PC
-  |  lwz TMP0, FRAME_PC(BASE)
-  |   lwz LFUNC:RB, FRAME_FUNC(BASE)
-  |  checkfunc TMP0; bne ->vmeta_call
+  |  ld LFUNC:RB, FRAME_FUNC(BASE)
+  |  checkfunc RB
+  |  bne ->vmeta_call
   |
   |->vm_call_dispatch_f:
   |  ins_call
@@ -769,29 +682,23 @@ static void build_subroutines(BuildCtx *ctx)
   |  // (lua_State *L, lua_CFunction func, void *ud, lua_CPFunction cp)
   |  saveregs
   |  mr L, CARG1
-  |   lwz TMP0, L:CARG1->stack
-  |  stw CARG1, SAVE_L
-  |   lp TMP1, L->top
-  |     lwz DISPATCH, L->glref		// Setup pointer to dispatch table.
-  |  stw CARG1, SAVE_PC			// Any value outside of bytecode is ok.
+  |   ld TMP0, L:CARG1->stack
+  |  std CARG1, SAVE_L
+  |   ld TMP1, L->top
+  |     ld DISPATCH, L->glref		// Setup pointer to dispatch table.
+  |  std CARG1, SAVE_PC			// Any value outside of bytecode is ok.
   |   sub TMP0, TMP0, TMP1		// Compute -savestack(L, L->top).
-  |    lp TMP1, L->cframe
+  |    ld TMP1, L->cframe
   |     addi DISPATCH, DISPATCH, GG_G2DISP
-  |  .toc lp CARG4, 0(CARG4)
   |  li TMP2, 0
-  |   stw TMP0, SAVE_NRES		// Neg. delta means cframe w/o frame.
-  |  stw TMP2, SAVE_ERRF		// No error function.
-  |    stp TMP1, SAVE_CFRAME
-  |    stp sp, L->cframe		// Add our C frame to cframe chain.
-  |     stw L, DISPATCH_GL(cur_L)(DISPATCH)
+  |   std TMP0, SAVE_NRES		// Neg. delta means cframe w/o frame.
+  |  std TMP2, SAVE_ERRF		// No error function.
+  |    std TMP1, SAVE_CFRAME
+  |    std sp, L->cframe		// Add our C frame to cframe chain.
+  |     std L, DISPATCH_GL(cur_L)(DISPATCH)
   |  mtctr CARG4
   |  bctrl			// (lua_State *L, lua_CFunction func, void *ud)
-  |.if PPE
-  |  mr BASE, CRET1
-  |  cmpwi CRET1, 0
-  |.else
   |  mr. BASE, CRET1
-  |.endif
   |   li PC, FRAME_CP
   |  bne <3				// Else continue with the call.
   |  b ->vm_leave_cp			// No base? Just remove C frame.
@@ -807,21 +714,23 @@ static void build_subroutines(BuildCtx *ctx)
   |
   |->cont_dispatch:
   |  // BASE = meta base, RA = resultptr, RD = (nresults+1)*8
-  |  lwz TMP0, -12(BASE)		// Continuation.
+  |  ld TMP0, -32(BASE)			// Continuation.
+  |  clear_field TMP0
   |   mr RB, BASE
   |   mr BASE, TMP2			// Restore caller BASE.
-  |    lwz LFUNC:TMP1, FRAME_FUNC(TMP2)
+  |    ld LFUNC:TMP1, FRAME_FUNC(TMP2)
+  |    clear_field LFUNC:TMP1
   |.if FFI
-  |  cmplwi TMP0, 1
+  |  cmpldi TMP0, 1
   |.endif
-  |     lwz PC, -16(RB)			// Restore PC from [cont|PC].
+  |     ld PC, -24(RB)			// Restore PC from [cont|PC].
   |   subi TMP2, RD, 8
-  |    lwz TMP1, LFUNC:TMP1->pc
-  |   stwx TISNIL, RA, TMP2		// Ensure one valid arg.
+  |    ld TMP1, LFUNC:TMP1->pc
+  |   stdx TISNIL, RA, TMP2		// Ensure one valid arg.
   |.if FFI
   |  ble >1
   |.endif
-  |    lwz KBASE, PC2PROTO(k)(TMP1)
+  |    ld KBASE, PC2PROTO(k)(TMP1)
   |  // BASE = base, RA = resultptr, RB = meta base
   |  mtctr TMP0
   |  bctr				// Jump to continuation.
@@ -830,19 +739,19 @@ static void build_subroutines(BuildCtx *ctx)
   |1:
   |  beq ->cont_ffi_callback		// cont = 1: return from FFI callback.
   |  // cont = 0: tailcall from C function.
-  |  subi TMP1, RB, 16
+  |  subi TMP1, RB, 32
   |  sub RC, TMP1, BASE
   |  b ->vm_call_tail
   |.endif
   |
   |->cont_cat:				// RA = resultptr, RB = meta base
   |  lwz INS, -4(PC)
-  |   subi CARG2, RB, 16
+  |   subi CARG2, RB, 32
   |  decode_RB8 SAVE0, INS
   |   lfd f0, 0(RA)
   |  add TMP1, BASE, SAVE0
-  |   stp BASE, L->base
-  |  cmplw TMP1, CARG2
+  |   std BASE, L->base
+  |  cmpld TMP1, CARG2
   |   sub CARG3, CARG2, TMP1
   |  decode_RA8 RA, INS
   |   stfd f0, 0(CARG2)
@@ -855,36 +764,34 @@ static void build_subroutines(BuildCtx *ctx)
   |->vmeta_tgets1:
   |  la CARG3, DISPATCH_GL(tmptv)(DISPATCH)
   |  li TMP0, LJ_TSTR
+  |  set_oper_type TMP0, TMP0
   |   decode_RB8 RB, INS
-  |  stw STR:RC, 4(CARG3)
+  |  add STR:RC, RC, TMP0
   |   add CARG2, BASE, RB
-  |  stw TMP0, 0(CARG3)
+  |  std STR:RC, 0(CARG3)
   |  b >1
   |
   |->vmeta_tgets:
   |  la CARG2, DISPATCH_GL(tmptv)(DISPATCH)
   |  li TMP0, LJ_TTAB
-  |  stw TAB:RB, 4(CARG2)
+  |  set_oper_type TMP0, TMP0
+  |  add TMP0, TMP0, TAB:RB
   |   la CARG3, DISPATCH_GL(tmptv2)(DISPATCH)
-  |  stw TMP0, 0(CARG2)
+  |  std TMP0, 0(CARG2)
   |   li TMP1, LJ_TSTR
-  |   stw STR:RC, 4(CARG3)
-  |   stw TMP1, 0(CARG3)
+  |   set_oper_type TMP1, TMP1
+  |   add TMP1, TMP1, TAB:RC
+  |   std TMP1, 0(CARG3)
   |  b >1
   |
   |->vmeta_tgetb:			// TMP0 = index
-  |.if not DUALNUM
-  |  tonum_u f0, TMP0
-  |.endif
   |   decode_RB8 RB, INS
   |  la CARG3, DISPATCH_GL(tmptv)(DISPATCH)
   |   add CARG2, BASE, RB
-  |.if DUALNUM
-  |  stw TISNUM, 0(CARG3)
-  |  stw TMP0, 4(CARG3)
-  |.else
-  |  stfd f0, 0(CARG3)
-  |.endif
+  | li TISNUM, LJ_TISNUM
+  | set_oper_type TISNUM, TISNUM
+  | add TMP0, TMP0, TISNUM
+  | std TMP0, 0(CARG3)
   |  b >1
   |
   |->vmeta_tgetv:
@@ -893,12 +800,12 @@ static void build_subroutines(BuildCtx *ctx)
   |  add CARG2, BASE, RB
   |   add CARG3, BASE, RC
   |1:
-  |  stp BASE, L->base
+  |  std BASE, L->base
   |  mr CARG1, L
-  |  stw PC, SAVE_PC
+  |  std PC, SAVE_PC
   |  bl extern lj_meta_tget		// (lua_State *L, TValue *o, TValue *k)
   |  // Returns TValue * (finished) or NULL (metamethod).
-  |  cmplwi CRET1, 0
+  |  cmpldi CRET1, 0
   |  beq >3
   |   lfd f0, 0(CRET1)
   |  ins_next1
@@ -908,22 +815,23 @@ static void build_subroutines(BuildCtx *ctx)
   |3:  // Call __index metamethod.
   |  // BASE = base, L->top = new base, stack = cont/func/t/k
   |  subfic TMP1, BASE, FRAME_CONT
-  |  lp BASE, L->top
-  |  stw PC, -16(BASE)			// [cont|PC]
+  |  ld BASE, L->top
+  |  std PC, -24(BASE)			// [cont|PC]
   |   add PC, TMP1, BASE
-  |  lwz LFUNC:RB, FRAME_FUNC(BASE)	// Guaranteed to be a function here.
+  |  ld LFUNC:RB, FRAME_FUNC(BASE)	// Guaranteed to be a function here.
   |   li NARGS8:RC, 16			// 2 args for func(t, k).
+  |  clear_field RB
   |  b ->vm_call_dispatch_f
   |
   |->vmeta_tgetr:
   |  bl extern lj_tab_getinth		// (GCtab *t, int32_t key)
   |  // Returns cTValue * or NULL.
-  |  cmplwi CRET1, 0
+  |  cmpldi CRET1, 0
   |  beq >1
   |  lfd f14, 0(CRET1)
   |  b ->BC_TGETR_Z
   |1:
-  |  stwx TISNIL, BASE, RA
+  |  stdx TISNIL, BASE, RA
   |  b ->cont_nop
   |
   |//-----------------------------------------------------------------------
@@ -931,36 +839,35 @@ static void build_subroutines(BuildCtx *ctx)
   |->vmeta_tsets1:
   |  la CARG3, DISPATCH_GL(tmptv)(DISPATCH)
   |  li TMP0, LJ_TSTR
+  |  set_oper_type TMP0, TMP0
   |   decode_RB8 RB, INS
-  |  stw STR:RC, 4(CARG3)
+  |  add TMP0, TMP0, STR:RC
   |   add CARG2, BASE, RB
-  |  stw TMP0, 0(CARG3)
+  |  std TMP0, 0(CARG3)
   |  b >1
   |
   |->vmeta_tsets:
   |  la CARG2, DISPATCH_GL(tmptv)(DISPATCH)
   |  li TMP0, LJ_TTAB
-  |  stw TAB:RB, 4(CARG2)
+  |  set_oper_type TMP0, TMP0
+  |  add TAB:RB, TMP0, TAB:RB
   |   la CARG3, DISPATCH_GL(tmptv2)(DISPATCH)
-  |  stw TMP0, 0(CARG2)
+  |  std TAB:RB, 0(CARG2)
   |   li TMP1, LJ_TSTR
-  |   stw STR:RC, 4(CARG3)
-  |   stw TMP1, 0(CARG3)
+  |   set_oper_type TMP1, TMP1
+  |   add STR:RC, TMP1, STR:RC
+  |   la CARG3, DISPATCH_GL(tmptv2)(DISPATCH)
+  |   std STR:RC, 0(CARG3)
   |  b >1
   |
   |->vmeta_tsetb:			// TMP0 = index
-  |.if not DUALNUM
-  |  tonum_u f0, TMP0
-  |.endif
   |   decode_RB8 RB, INS
   |  la CARG3, DISPATCH_GL(tmptv)(DISPATCH)
   |   add CARG2, BASE, RB
-  |.if DUALNUM
-  |  stw TISNUM, 0(CARG3)
-  |  stw TMP0, 4(CARG3)
-  |.else
-  |  stfd f0, 0(CARG3)
-  |.endif
+  |  li TISNUM, LJ_TISNUM
+  |  set_oper_type TISNUM, TISNUM
+  |  add TMP0, TMP0, TISNUM		// assume TMP0 has no type
+  |  std TMP0, 0(CARG3)
   |  b >1
   |
   |->vmeta_tsetv:
@@ -969,12 +876,12 @@ static void build_subroutines(BuildCtx *ctx)
   |  add CARG2, BASE, RB
   |   add CARG3, BASE, RC
   |1:
-  |  stp BASE, L->base
+  |  std BASE, L->base
   |  mr CARG1, L
-  |  stw PC, SAVE_PC
+  |  std PC, SAVE_PC
   |  bl extern lj_meta_tset		// (lua_State *L, TValue *o, TValue *k)
   |  // Returns TValue * (finished) or NULL (metamethod).
-  |  cmplwi CRET1, 0
+  |  cmpldi CRET1, 0
   |   lfdx f0, BASE, RA
   |  beq >3
   |  // NOBARRIER: lj_meta_tset ensures the table is not black.
@@ -985,17 +892,18 @@ static void build_subroutines(BuildCtx *ctx)
   |3:  // Call __newindex metamethod.
   |  // BASE = base, L->top = new base, stack = cont/func/t/k/(v)
   |  subfic TMP1, BASE, FRAME_CONT
-  |  lp BASE, L->top
-  |  stw PC, -16(BASE)			// [cont|PC]
+  |  ld BASE, L->top
+  |  std PC, -24(BASE)			// [cont|PC]
   |   add PC, TMP1, BASE
-  |  lwz LFUNC:RB, FRAME_FUNC(BASE)	// Guaranteed to be a function here.
+  |  ld LFUNC:RB, FRAME_FUNC(BASE)	// Guaranteed to be a function here.
   |   li NARGS8:RC, 24			// 3 args for func(t, k, v)
   |  stfd f0, 16(BASE)			// Copy value to third argument.
+  |  clear_field RB
   |  b ->vm_call_dispatch_f
   |
   |->vmeta_tsetr:
-  |  stp BASE, L->base
-  |  stw PC, SAVE_PC
+  |  std BASE, L->base
+  |  std PC, SAVE_PC
   |  bl extern lj_tab_setinth  // (lua_State *L, GCtab *t, int32_t key)
   |  // Returns TValue *.
   |  stfd f14, 0(CRET1)
@@ -1006,23 +914,15 @@ static void build_subroutines(BuildCtx *ctx)
   |->vmeta_comp:
   |  mr CARG1, L
   |   subi PC, PC, 4
-  |.if DUALNUM
   |  mr CARG2, RA
-  |.else
-  |  add CARG2, BASE, RA
-  |.endif
-  |   stw PC, SAVE_PC
-  |.if DUALNUM
+  |   std PC, SAVE_PC
   |  mr CARG3, RD
-  |.else
-  |  add CARG3, BASE, RD
-  |.endif
-  |   stp BASE, L->base
+  |   std BASE, L->base
   |  decode_OP1 CARG4, INS
   |  bl extern lj_meta_comp  // (lua_State *L, TValue *o1, *o2, int op)
   |  // Returns 0/1 or TValue * (metamethod).
   |3:
-  |  cmplwi CRET1, 1
+  |  cmpldi CRET1, 1
   |  bgt ->vmeta_binop
   |  subfic CRET1, CRET1, 0
   |4:
@@ -1043,26 +943,29 @@ static void build_subroutines(BuildCtx *ctx)
   |  b ->cont_nop
   |
   |->cont_condt:			// RA = resultptr
-  |  lwz TMP0, 0(RA)
-  |  .gpr64 extsw TMP0, TMP0
+  |  ld TMP0, 0(RA)
+  |  get_oper_type TMP0, TMP0
   |  subfic TMP0, TMP0, LJ_TTRUE	// Branch if result is true.
+  |  set_oper_type TMP0, TMP0
   |  subfe CRET1, CRET1, CRET1
   |  not CRET1, CRET1
   |  b <4
   |
   |->cont_condf:			// RA = resultptr
-  |  lwz TMP0, 0(RA)
-  |  .gpr64 extsw TMP0, TMP0
+  |  ld TMP0, 0(RA)
+  |  get_oper_type TMP0, TMP0
   |  subfic TMP0, TMP0, LJ_TTRUE	// Branch if result is false.
+  |  set_oper_type TMP0, TMP0
   |  subfe CRET1, CRET1, CRET1
   |  b <4
   |
   |->vmeta_equal:
   |  // CARG2, CARG3, CARG4 are already set by BC_ISEQV/BC_ISNEV.
+  |  clear_field CARG3
   |  subi PC, PC, 4
-  |   stp BASE, L->base
+  |   std BASE, L->base
   |  mr CARG1, L
-  |   stw PC, SAVE_PC
+  |   std PC, SAVE_PC
   |  bl extern lj_meta_equal  // (lua_State *L, GCobj *o1, *o2, int ne)
   |  // Returns 0/1 or TValue * (metamethod).
   |  b <3
@@ -1071,9 +974,9 @@ static void build_subroutines(BuildCtx *ctx)
   |.if FFI
   |  mr CARG2, INS
   |  subi PC, PC, 4
-  |   stp BASE, L->base
+  |   std BASE, L->base
   |  mr CARG1, L
-  |   stw PC, SAVE_PC
+  |   std PC, SAVE_PC
   |  bl extern lj_meta_equal_cd		// (lua_State *L, BCIns op)
   |  // Returns 0/1 or TValue * (metamethod).
   |  b <3
@@ -1081,11 +984,11 @@ static void build_subroutines(BuildCtx *ctx)
   |
   |->vmeta_istype:
   |  subi PC, PC, 4
-  |   stp BASE, L->base
-  |   srwi CARG2, RA, 3
+  |   std BASE, L->base
+  |   srdi CARG2, RA, 3
   |   mr CARG1, L
-  |   srwi CARG3, RD, 3
-  |  stw PC, SAVE_PC
+  |   srdi CARG3, RD, 3
+  |  std PC, SAVE_PC
   |  bl extern lj_meta_istype  // (lua_State *L, BCReg ra, BCReg tp)
   |  b ->cont_nop
   |
@@ -1096,11 +999,9 @@ static void build_subroutines(BuildCtx *ctx)
   |  add CARG4, BASE, RB
   |  b >1
   |->vmeta_arith_nv2:
-  |.if DUALNUM
   |  mr CARG3, RC
   |  mr CARG4, RB
   |  b >1
-  |.endif
   |
   |->vmeta_unm:
   |  mr CARG3, RD
@@ -1115,31 +1016,27 @@ static void build_subroutines(BuildCtx *ctx)
   |->vmeta_arith_vv:
   |  add CARG3, BASE, RB
   |  add CARG4, BASE, RC
-  |.if DUALNUM
   |  b >1
-  |.endif
   |->vmeta_arith_vn2:
   |->vmeta_arith_vv2:
-  |.if DUALNUM
   |  mr CARG3, RB
   |  mr CARG4, RC
-  |.endif
   |1:
   |  add CARG2, BASE, RA
-  |   stp BASE, L->base
+  |   std BASE, L->base
   |  mr CARG1, L
-  |   stw PC, SAVE_PC
+  |   std PC, SAVE_PC
   |  decode_OP1 CARG5, INS		// Caveat: CARG5 overlaps INS.
   |  bl extern lj_meta_arith  // (lua_State *L, TValue *ra,*rb,*rc, BCReg op)
   |  // Returns NULL (finished) or TValue * (metamethod).
-  |  cmplwi CRET1, 0
+  |  cmpldi CRET1, 0
   |  beq ->cont_nop
   |
   |  // Call metamethod for binary op.
   |->vmeta_binop:
   |  // BASE = old base, CRET1 = new base, stack = cont/func/o1/o2
   |  sub TMP1, CRET1, BASE
-  |   stw PC, -16(CRET1)		// [cont|PC]
+  |   std PC, -24(CRET1)		// [cont|PC]
   |   mr TMP2, BASE
   |  addi PC, TMP1, FRAME_CONT
   |   mr BASE, CRET1
@@ -1151,13 +1048,13 @@ static void build_subroutines(BuildCtx *ctx)
   |  mr SAVE0, CARG1
 #endif
   |  mr CARG2, RD
-  |   stp BASE, L->base
+  |   std BASE, L->base
   |  mr CARG1, L
-  |   stw PC, SAVE_PC
+  |   std PC, SAVE_PC
   |  bl extern lj_meta_len		// (lua_State *L, TValue *o)
   |  // Returns NULL (retry) or TValue * (metamethod base).
 #if LJ_52
-  |  cmplwi CRET1, 0
+  |  cmpldi CRET1, 0
   |  bne ->vmeta_binop			// Binop call for compatibility.
   |  mr CARG1, SAVE0
   |  b ->BC_LEN_Z
@@ -1170,37 +1067,39 @@ static void build_subroutines(BuildCtx *ctx)
   |->vmeta_call:			// Resolve and call __call metamethod.
   |  // TMP2 = old base, BASE = new base, RC = nargs*8
   |  mr CARG1, L
-  |   stp TMP2, L->base			// This is the callers base!
-  |  subi CARG2, BASE, 8
-  |   stw PC, SAVE_PC
+  |   std TMP2, L->base			// This is the callers base!
+  |  subi CARG2, BASE, 16
+  |   std PC, SAVE_PC
   |  add CARG3, BASE, RC
   |   mr SAVE0, NARGS8:RC
   |  bl extern lj_meta_call	// (lua_State *L, TValue *func, TValue *top)
-  |  lwz LFUNC:RB, FRAME_FUNC(BASE)	// Guaranteed to be a function here.
+  |  ld LFUNC:RB, FRAME_FUNC(BASE)	// Guaranteed to be a function here.
   |   addi NARGS8:RC, SAVE0, 8		// Got one more argument now.
+  |  clear_field RB
   |  ins_call
   |
   |->vmeta_callt:			// Resolve __call for BC_CALLT.
   |  // BASE = old base, RA = new base, RC = nargs*8
   |  mr CARG1, L
-  |   stp BASE, L->base
-  |  subi CARG2, RA, 8
-  |   stw PC, SAVE_PC
+  |   std BASE, L->base
+  |  subi CARG2, RA, 16
+  |   std PC, SAVE_PC
   |  add CARG3, RA, RC
   |   mr SAVE0, NARGS8:RC
   |  bl extern lj_meta_call	// (lua_State *L, TValue *func, TValue *top)
-  |  lwz TMP1, FRAME_PC(BASE)
+  |  ld TMP1, FRAME_PC(BASE)
   |   addi NARGS8:RC, SAVE0, 8		// Got one more argument now.
-  |   lwz LFUNC:RB, FRAME_FUNC(RA)	// Guaranteed to be a function here.
+  |   ld LFUNC:RB, FRAME_FUNC(RA)	// Guaranteed to be a function here.
+  |  clear_field RB
   |  b ->BC_CALLT_Z
   |
   |//-- Argument coercion for 'for' statement ------------------------------
   |
   |->vmeta_for:
   |  mr CARG1, L
-  |   stp BASE, L->base
+  |   std BASE, L->base
   |  mr CARG2, RA
-  |   stw PC, SAVE_PC
+  |   std PC, SAVE_PC
   |  mr SAVE0, INS
   |  bl extern lj_meta_for	// (lua_State *L, TValue *base)
   |.if JIT
@@ -1208,7 +1107,7 @@ static void build_subroutines(BuildCtx *ctx)
   |.endif
   |  decode_RA8 RA, SAVE0
   |.if JIT
-  |   cmpwi TMP0, BC_JFORI
+  |   cmpdi TMP0, BC_JFORI
   |.endif
   |  decode_RD8 RD, SAVE0
   |.if JIT
@@ -1226,26 +1125,23 @@ static void build_subroutines(BuildCtx *ctx)
   |
   |.macro .ffunc_1, name
   |->ff_ .. name:
-  |  cmplwi NARGS8:RC, 8
-  |   lwz CARG3, 0(BASE)
-  |    lwz CARG1, 4(BASE)
+  |  cmpldi NARGS8:RC, 8
+  |   ld CARG1, 0(BASE)
   |  blt ->fff_fallback
   |.endmacro
   |
   |.macro .ffunc_2, name
   |->ff_ .. name:
-  |  cmplwi NARGS8:RC, 16
-  |   lwz CARG3, 0(BASE)
-  |    lwz CARG4, 8(BASE)
-  |   lwz CARG1, 4(BASE)
-  |    lwz CARG2, 12(BASE)
+  | cmpldi NARGS8:RC, 16
+  |  ld CARG1, 0(BASE)
+  |    ld CARG2, 8(BASE)
   |  blt ->fff_fallback
   |.endmacro
   |
   |.macro .ffunc_n, name
   |->ff_ .. name:
-  |  cmplwi NARGS8:RC, 8
-  |   lwz CARG3, 0(BASE)
+  |  cmpldi NARGS8:RC, 8
+  |   ld CARG3, 0(BASE)
   |    lfd FARG1, 0(BASE)
   |  blt ->fff_fallback
   |  checknum CARG3; bge ->fff_fallback
@@ -1253,10 +1149,10 @@ static void build_subroutines(BuildCtx *ctx)
   |
   |.macro .ffunc_nn, name
   |->ff_ .. name:
-  |  cmplwi NARGS8:RC, 16
-  |   lwz CARG3, 0(BASE)
+  |  cmpldi NARGS8:RC, 16
+  |   ld CARG3, 0(BASE)
   |    lfd FARG1, 0(BASE)
-  |   lwz CARG4, 8(BASE)
+  |   ld CARG4, 8(BASE)
   |    lfd FARG2, 8(BASE)
   |  blt ->fff_fallback
   |  checknum CARG3; bge ->fff_fallback
@@ -1265,360 +1161,354 @@ static void build_subroutines(BuildCtx *ctx)
   |
   |// Inlined GC threshold check. Caveat: uses TMP0 and TMP1.
   |.macro ffgccheck
-  |  lwz TMP0, DISPATCH_GL(gc.total)(DISPATCH)
-  |  lwz TMP1, DISPATCH_GL(gc.threshold)(DISPATCH)
-  |  cmplw TMP0, TMP1
+  |  ld TMP0, DISPATCH_GL(gc.total)(DISPATCH)
+  |  ld TMP1, DISPATCH_GL(gc.threshold)(DISPATCH)
+  |  cmpld TMP0, TMP1
   |  bgel ->fff_gcstep
   |.endmacro
   |
   |//-- Base library: checks -----------------------------------------------
   |
   |.ffunc_1 assert
-  |  li TMP1, LJ_TFALSE
-  |   la RA, -8(BASE)
-  |  cmplw cr1, CARG3, TMP1
-  |    lwz PC, FRAME_PC(BASE)
+  |   set_bool TMP1, LJ_TFALSE
+  |   la RA, -16(BASE)
+  |  cmpld cr1, CARG1, TMP1
+  |    ld PC, FRAME_PC(BASE)
   |  bge cr1, ->fff_fallback
-  |   stw CARG3, 0(RA)
+  |   std CARG1, 0(RA)
   |  addi RD, NARGS8:RC, 8		// Compute (nresults+1)*8.
-  |   stw CARG1, 4(RA)
   |  beq ->fff_res			// Done if exactly 1 argument.
   |  li TMP1, 8
   |  subi RC, RC, 8
   |1:
-  |  cmplw TMP1, RC
-  |   lfdx f0, BASE, TMP1
-  |   stfdx f0, RA, TMP1
+  |  cmpld TMP1, RC
+  |   ldx TMP0, BASE, TMP1
+  |   stdx TMP0, RA, TMP1
   |    addi TMP1, TMP1, 8
   |  bney <1
   |  b ->fff_res
   |
   |.ffunc type
-  |  cmplwi NARGS8:RC, 8
-  |   lwz CARG1, 0(BASE)
+  |  cmpldi NARGS8:RC, 8
+  |   ld CARG1, 0(BASE)
+  |   get_oper_type CARG1, CARG1	// only type is needed
   |  blt ->fff_fallback
-  |  .gpr64 extsw CARG1, CARG1
-  |  subfc TMP0, TISNUM, CARG1
+  |  get_oper_type TMP0, TISNUM		// comparing with type shifted
+  |  subfc TMP0, TMP0, CARG1
   |  subfe TMP2, CARG1, CARG1
   |  orc TMP1, TMP2, TMP0
   |  addi TMP1, TMP1, ~LJ_TISNUM+1
-  |  slwi TMP1, TMP1, 3
+  |  sldi TMP1, TMP1, 3
   |   la TMP2, CFUNC:RB->upvalue
   |  lfdx FARG1, TMP2, TMP1
-  |  b ->fff_resn
+  |  ldx CARG1, TMP2, TMP1
+  |  b ->fff_restv
   |
   |//-- Base library: getters and setters ---------------------------------
   |
   |.ffunc_1 getmetatable
-  |  checktab CARG3; bne >6
+  | get_oper_type CARG3, CARG1		// saving for :6
+  | checktab CARG1; bne >6
   |1:  // Field metatable must be at same offset for GCtab and GCudata!
-  |  lwz TAB:CARG1, TAB:CARG1->metatable
+  |  ld TAB:RB, TAB:CARG1->metatable
   |2:
-  |  li CARG3, LJ_TNIL
-  |   cmplwi TAB:CARG1, 0
-  |  lwz STR:RC, DISPATCH_GL(gcroot[GCROOT_MMNAME+MM_metatable])(DISPATCH)
+  |  mr CARG1, TISNIL
+  |   cmpldi TAB:RB, 0
+  |  ld STR:RC, DISPATCH_GL(gcroot[GCROOT_MMNAME+MM_metatable])(DISPATCH)
   |   beq ->fff_restv
-  |  lwz TMP0, TAB:CARG1->hmask
-  |   li CARG3, LJ_TTAB			// Use metatable as default result.
-  |  lwz TMP1, STR:RC->hash
-  |  lwz NODE:TMP2, TAB:CARG1->node
+  |  lwz TMP0, TAB:RB->hmask
+  |   li CARG1, LJ_TTAB			// Use metatable as default result.
+  |  ld TMP1, STR:RC->hash
+  |   set_oper_type CARG1, CARG1
+  |  ld NODE:TMP2, TAB:RB->node
+  |  add CARG1, CARG1, TAB:RB
   |  and TMP1, TMP1, TMP0		// idx = str->hash & tab->hmask
-  |  slwi TMP0, TMP1, 5
-  |  slwi TMP1, TMP1, 3
+  |  sldi TMP0, TMP1, 5
+  |  sldi TMP1, TMP1, 3
   |  sub TMP1, TMP0, TMP1
   |  add NODE:TMP2, NODE:TMP2, TMP1	// node = tab->node + (idx*32-idx*8)
   |3:  // Rearranged logic, because we expect _not_ to find the key.
-  |  lwz CARG4, NODE:TMP2->key
-  |   lwz TMP0, 4+offsetof(Node, key)(NODE:TMP2)
-  |    lwz CARG2, NODE:TMP2->val
-  |     lwz TMP1, 4+offsetof(Node, val)(NODE:TMP2)
+  |  ld CARG4, NODE:TMP2->key
+  |    ld CARG2, NODE:TMP2->val
   |  checkstr CARG4; bne >4
-  |   cmpw TMP0, STR:RC; beq >5
+  |   cmpd CARG4, STR:RC; beq >5
   |4:
-  |  lwz NODE:TMP2, NODE:TMP2->next
-  |  cmplwi NODE:TMP2, 0
+  |  ld NODE:TMP2, NODE:TMP2->next
+  |  cmpldi NODE:TMP2, 0
   |  beq ->fff_restv			// Not found, keep default result.
   |  b <3
   |5:
-  |  checknil CARG2
+  |  checknil_noclear CARG2
   |  beq ->fff_restv			// Ditto for nil value.
-  |  mr CARG3, CARG2			// Return value of mt.__metatable.
-  |  mr CARG1, TMP1
+  |  mr CARG1, CARG2
   |  b ->fff_restv
   |
   |6:
-  |  cmpwi CARG3, LJ_TUDATA; beq <1
-  |  .gpr64 extsw CARG3, CARG3
-  |  subfc TMP0, TISNUM, CARG3
+  |  get_oper_type TMP3, TISNUM
+  |  cmpdi CARG3, LJ_TUDATA; beq <1
+  |  subfc TMP0, TMP3, CARG3
   |  subfe TMP2, CARG3, CARG3
   |  orc TMP1, TMP2, TMP0
   |  addi TMP1, TMP1, ~LJ_TISNUM+1
-  |  slwi TMP1, TMP1, 2
+  |  sldi TMP1, TMP1, 3
   |   la TMP2, DISPATCH_GL(gcroot[GCROOT_BASEMT])(DISPATCH)
-  |  lwzx TAB:CARG1, TMP2, TMP1
+  |  ldx TAB:RB, TMP2, TMP1
   |  b <2
   |
   |.ffunc_2 setmetatable
   |  // Fast path: no mt for table yet and not clearing the mt.
-  |   checktab CARG3; bne ->fff_fallback
-  |  lwz TAB:TMP1, TAB:CARG1->metatable
-  |   checktab CARG4; bne ->fff_fallback
-  |  cmplwi TAB:TMP1, 0
-  |   lbz TMP3, TAB:CARG1->marked
+  |  mr TMP2, CARG1
+  |  checktab TMP2; bne ->fff_fallback
+  |  ld TAB:TMP1, TAB:TMP2->metatable
+  |   checktab CARG2; bne ->fff_fallback
+  |  cmpldi TAB:TMP1, 0
+  |   lbz TMP3, TAB:TMP2->marked
   |  bne ->fff_fallback
-  |   andix. TMP0, TMP3, LJ_GC_BLACK	// isblack(table)
-  |    stw TAB:CARG2, TAB:CARG1->metatable
+  |   andi. TMP0, TMP3, LJ_GC_BLACK	// isblack(table)
+  |    std TAB:CARG2, TAB:TMP2->metatable
   |   beq ->fff_restv
-  |  barrierback TAB:CARG1, TMP3, TMP0
+  |  barrierback TAB:TMP2, TMP3, TMP0
   |  b ->fff_restv
   |
   |.ffunc rawget
-  |  cmplwi NARGS8:RC, 16
-  |   lwz CARG4, 0(BASE)
-  |    lwz TAB:CARG2, 4(BASE)
+  |  cmpldi NARGS8:RC, 16
+  |   ld CARG2, 0(BASE)
   |  blt ->fff_fallback
-  |  checktab CARG4; bne ->fff_fallback
+  |  checktab CARG2; bne ->fff_fallback
   |   la CARG3, 8(BASE)
   |   mr CARG1, L
   |  bl extern lj_tab_get  // (lua_State *L, GCtab *t, cTValue *key)
   |  // Returns cTValue *.
   |  lfd FARG1, 0(CRET1)
-  |  b ->fff_resn
+  |  ld CARG1, 0(CRET1)
+  |  b ->fff_restv
   |
   |//-- Base library: conversions ------------------------------------------
   |
   |.ffunc tonumber
   |  // Only handles the number case inline (without a base argument).
-  |  cmplwi NARGS8:RC, 8
-  |   lwz CARG1, 0(BASE)
+  |  cmpldi NARGS8:RC, 8
+  |   ld CARG1, 0(BASE)
   |    lfd FARG1, 0(BASE)
   |  bne ->fff_fallback			// Exactly one argument.
-  |   checknum CARG1; bgt ->fff_fallback
-  |  b ->fff_resn
+  |   checknum_noclear CARG1; ble ->fff_restv
+  |  b ->fff_fallback
   |
   |.ffunc_1 tostring
   |  // Only handles the string or number case inline.
+  |  // save CARG1 type for checknum_sig and fff_restv
+  |  mr CARG3, CARG1
   |  checkstr CARG3
   |  // A __tostring method in the string base metatable is ignored.
   |  beq ->fff_restv			// String key?
   |  // Handle numbers inline, unless a number base metatable is present.
-  |  lwz TMP0, DISPATCH_GL(gcroot[GCROOT_BASEMT_NUM])(DISPATCH)
-  |  checknum CARG3
-  |  cmplwi cr1, TMP0, 0
-  |   stp BASE, L->base			// Add frame since C call can throw.
+  |  ld TMP0, DISPATCH_GL(gcroot[GCROOT_BASEMT_NUM])(DISPATCH)
+  |   checknum_sig CARG1
+  |  cmpldi cr1, TMP0, 0
+  |   std BASE, L->base			// Add frame since C call can throw.
   |  crorc 4*cr0+eq, 4*cr0+gt, 4*cr1+eq
-  |   stw PC, SAVE_PC			// Redundant (but a defined value).
+  |   std PC, SAVE_PC			// Redundant (but a defined value).
   |  beq ->fff_fallback
   |  ffgccheck
   |  mr CARG1, L
   |  mr CARG2, BASE
-  |.if DUALNUM
   |  bl extern lj_strfmt_number		// (lua_State *L, cTValue *o)
-  |.else
-  |  bl extern lj_strfmt_num		// (lua_State *L, lua_Number *np)
-  |.endif
   |  // Returns GCstr *.
   |  li CARG3, LJ_TSTR
+  |  set_oper_type CARG3, CARG3
+  |  add CARG1, CARG1, CARG3
   |  b ->fff_restv
   |
   |//-- Base library: iterators -------------------------------------------
   |
   |.ffunc next
-  |  cmplwi NARGS8:RC, 8
-  |   lwz CARG1, 0(BASE)
-  |    lwz TAB:CARG2, 4(BASE)
+  |  cmpldi NARGS8:RC, 8
+  |   ld CARG1, 0(BASE)
   |  blt ->fff_fallback
-  |   stwx TISNIL, BASE, NARGS8:RC	// Set missing 2nd arg to nil.
+  |   stdx TISNIL, BASE, NARGS8:RC	// Set missing 2nd arg to nil.
   |  checktab CARG1
-  |   lwz PC, FRAME_PC(BASE)
+  |   ld PC, FRAME_PC(BASE)
   |  bne ->fff_fallback
-  |   stp BASE, L->base			// Add frame since C call can throw.
+  |  mr CARG2, CARG1
+  |   std BASE, L->base			// Add frame since C call can throw.
   |  mr CARG1, L
-  |   stp BASE, L->top			// Dummy frame length is ok.
+  |   std BASE, L->top			// Dummy frame length is ok.
   |  la CARG3, 8(BASE)
-  |   stw PC, SAVE_PC
+  |   std PC, SAVE_PC
   |  bl extern lj_tab_next	// (lua_State *L, GCtab *t, TValue *key)
   |  // Returns 0 at end of traversal.
-  |  cmplwi CRET1, 0
+  |  cmpldi CRET1, 0
   |   li CARG3, LJ_TNIL
-  |  beq ->fff_restv			// End of traversal: return nil.
-  |  lfd f0, 8(BASE)			// Copy key and value to results.
-  |   la RA, -8(BASE)
-  |  lfd f1, 16(BASE)
-  |  stfd f0, 0(RA)
+  |  std CARG3, -16(BASE)
+  |  beq ->fff_res1			// End of traversal: return nil.
+  |  ld CARG1, 8(BASE)			// Copy key and value to results.
+  |   la RA, -16(BASE)
+  |  ld CARG2, 16(BASE)
+  |  std CARG1, 0(RA)
   |   li RD, (2+1)*8
-  |  stfd f1, 8(RA)
+  |  std CARG2, 8(RA)
   |  b ->fff_res
   |
   |.ffunc_1 pairs
-  |  checktab CARG3
-  |   lwz PC, FRAME_PC(BASE)
+  |  mr TMP1, CARG1
+  |  checktab CARG1
+  |   ld PC, FRAME_PC(BASE)
   |  bne ->fff_fallback
 #if LJ_52
-  |   lwz TAB:TMP2, TAB:CARG1->metatable
-  |  lfd f0, CFUNC:RB->upvalue[0]
-  |   cmplwi TAB:TMP2, 0
-  |  la RA, -8(BASE)
+  |   ld TAB:TMP2, TAB:CARG1->metatable
+  |  ld TMP0, CFUNC:RB->upvalue[0]
+  |   cmpldi TAB:TMP2, 0
+  |  la RA, -16(BASE)
   |   bne ->fff_fallback
 #else
-  |  lfd f0, CFUNC:RB->upvalue[0]
-  |  la RA, -8(BASE)
+  |  ld TMP0, CFUNC:RB->upvalue[0]
+  |  la RA, -16(BASE)
 #endif
-  |   stw TISNIL, 8(BASE)
+  |   std TMP1, 8(RA)
+  |   std TISNIL, 16(RA)
   |  li RD, (3+1)*8
-  |  stfd f0, 0(RA)
+  |  std TMP0, 0(RA)
   |  b ->fff_res
   |
   |.ffunc ipairs_aux
-  |  cmplwi NARGS8:RC, 16
-  |   lwz CARG3, 0(BASE)
-  |    lwz TAB:CARG1, 4(BASE)
-  |   lwz CARG4, 8(BASE)
-  |.if DUALNUM
-  |    lwz TMP2, 12(BASE)
-  |.else
-  |    lfd FARG2, 8(BASE)
-  |.endif
+  |  cmpldi NARGS8:RC, 16
+  |   ld CARG4, 8(BASE)
+  |   ld CARG1, 0(BASE)
   |  blt ->fff_fallback
-  |  checktab CARG3
+  |  checktab CARG1
   |  checknum cr1, CARG4
-  |   lwz PC, FRAME_PC(BASE)
-  |.if DUALNUM
+  |   ld PC, FRAME_PC(BASE)
   |  bne ->fff_fallback
   |  bne cr1, ->fff_fallback
-  |.else
-  |    lus TMP0, 0x3ff0
-  |    stw ZERO, TMPD_LO
-  |  bne ->fff_fallback
-  |    stw TMP0, TMPD_HI
-  |  bge cr1, ->fff_fallback
-  |    lfd FARG1, TMPD
-  |  toint TMP2, FARG2, f0
-  |.endif
   |   lwz TMP0, TAB:CARG1->asize
-  |   lwz TMP1, TAB:CARG1->array
-  |.if not DUALNUM
-  |  fadd FARG2, FARG2, FARG1
-  |.endif
-  |  addi TMP2, TMP2, 1
-  |   la RA, -8(BASE)
+  |   ld TMP1, TAB:CARG1->array
+  |  addi TMP2, CARG4, 1
+  |   la RA, -16(BASE)
   |  cmplw TMP0, TMP2
-  |.if DUALNUM
-  |  stw TISNUM, 0(RA)
-  |   slwi TMP3, TMP2, 3
-  |  stw TMP2, 4(RA)
-  |.else
-  |   slwi TMP3, TMP2, 3
-  |  stfd FARG2, 0(RA)
-  |.endif
+  |   sldi TMP3, TMP2, 3		// TMP2 is array index
+  |  add TMP2, TMP2, TISNUM		// TMP2 is now lua number
+  |  std TMP2, 0(RA)
   |  ble >2				// Not in array part?
-  |  lwzx TMP2, TMP1, TMP3
-  |  lfdx f0, TMP1, TMP3
+  |  ldx TMP2, TMP1, TMP3
   |1:
-  |  checknil TMP2
+  |  checknil_noclear TMP2
   |   li RD, (0+1)*8
   |  beq ->fff_res			// End of iteration, return 0 results.
   |   li RD, (2+1)*8
-  |  stfd f0, 8(RA)
+  |  std TMP2, 8(RA)
   |  b ->fff_res
   |2:  // Check for empty hash part first. Otherwise call C function.
   |  lwz TMP0, TAB:CARG1->hmask
-  |  cmplwi TMP0, 0
+  |  cmpldi TMP0, 0
   |   li RD, (0+1)*8
   |  beq ->fff_res
   |   mr CARG2, TMP2
   |  bl extern lj_tab_getinth		// (GCtab *t, int32_t key)
   |  // Returns cTValue * or NULL.
-  |  cmplwi CRET1, 0
+  |  cmpldi CRET1, 0
   |   li RD, (0+1)*8
   |  beq ->fff_res
-  |  lwz TMP2, 0(CRET1)
-  |  lfd f0, 0(CRET1)
+  |  ld TMP2, 0(CRET1)
   |  b <1
   |
   |.ffunc_1 ipairs
-  |  checktab CARG3
-  |   lwz PC, FRAME_PC(BASE)
+  |  mr TMP1, CARG1
+  |  checktab CARG1
+  |   ld PC, FRAME_PC(BASE)
   |  bne ->fff_fallback
 #if LJ_52
-  |   lwz TAB:TMP2, TAB:CARG1->metatable
-  |  lfd f0, CFUNC:RB->upvalue[0]
-  |   cmplwi TAB:TMP2, 0
-  |  la RA, -8(BASE)
+  |   ld TAB:TMP2, TAB:CARG1->metatable
+  |  ld TMP0, CFUNC:RB->upvalue[0]
+  |   cmpldi TAB:TMP2, 0
+  |  la RA, -16(BASE)
   |   bne ->fff_fallback
 #else
-  |  lfd f0, CFUNC:RB->upvalue[0]
-  |  la RA, -8(BASE)
+  |  ld TMP0, CFUNC:RB->upvalue[0]
+  |  la RA, -16(BASE)
 #endif
-  |.if DUALNUM
-  |  stw TISNUM, 8(BASE)
-  |.else
-  |  stw ZERO, 8(BASE)
-  |.endif
-  |   stw ZERO, 12(BASE)
+  |  std TMP1, -8(BASE)
+  |  std TISNUM, 0(BASE)
   |  li RD, (3+1)*8
-  |  stfd f0, 0(RA)
+  |  std TMP0, -16(BASE)
   |  b ->fff_res
   |
   |//-- Base library: catch errors ----------------------------------------
   |
   |.ffunc pcall
-  |  cmplwi NARGS8:RC, 8
+  |  cmpldi NARGS8:RC, 8
   |   lbz TMP3, DISPATCH_GL(hookmask)(DISPATCH)
   |  blt ->fff_fallback
   |   mr TMP2, BASE
-  |   la BASE, 8(BASE)
+  |   la BASE, 16(BASE)
   |  // Remember active hook before pcall.
   |  rlwinm TMP3, TMP3, 32-HOOK_ACTIVE_SHIFT, 31, 31
   |   subi NARGS8:RC, NARGS8:RC, 8
-  |  addi PC, TMP3, 8+FRAME_PCALL
+  |  addi PC, TMP3, 16+FRAME_PCALL
+  |   cmpdi NARGS8:RC, 0
+  |  beq ->vm_call_dispatch
+  |1:
+  |   add TMP1, BASE, NARGS8:RC
+  |2:
+  |   ld TMP0, -16(TMP1)
+  |   stdu TMP0, -8(TMP1)
+  |   cmpld TMP1, BASE
+  |   bne <2
   |  b ->vm_call_dispatch
   |
   |.ffunc xpcall
-  |  cmplwi NARGS8:RC, 16
-  |   lwz CARG4, 8(BASE)
-  |    lfd FARG2, 8(BASE)
-  |    lfd FARG1, 0(BASE)
+  |  subic. NARGS8:RC, NARGS8:RC, 16
+  |    ld CARG2, 8(BASE)
+  |    ld CARG1, 0(BASE)
   |  blt ->fff_fallback
   |  lbz TMP1, DISPATCH_GL(hookmask)(DISPATCH)
   |   mr TMP2, BASE
-  |  checkfunc CARG4; bne ->fff_fallback  // Traceback must be a function.
-  |   la BASE, 16(BASE)
+  |  // Traceback must be a function.
+  |  checkfunc_noclear CARG2; bne ->fff_fallback
+  |   la BASE, 24(BASE)
   |  // Remember active hook before pcall.
   |  rlwinm TMP1, TMP1, 32-HOOK_ACTIVE_SHIFT, 31, 31
-  |    stfd FARG2, 0(TMP2)		// Swap function and traceback.
-  |  subi NARGS8:RC, NARGS8:RC, 16
-  |    stfd FARG1, 8(TMP2)
-  |  addi PC, TMP1, 16+FRAME_PCALL
-  |  b ->vm_call_dispatch
+  |    std CARG2, 0(TMP2)		// Swap function and traceback.
+  |  cmpdi RC, 0
+  |    std CARG1, 8(TMP2)
+  |   addi PC, TMP1, 24+FRAME_PCALL
+  |  beq ->vm_call_dispatch
+  |  b <1
   |
   |//-- Coroutine library --------------------------------------------------
   |
   |.macro coroutine_resume_wrap, resume
   |.if resume
   |.ffunc_1 coroutine_resume
-  |  cmpwi CARG3, LJ_TTHREAD; bne ->fff_fallback
+  |  checkthread CARG1; bne ->fff_fallback
   |.else
   |.ffunc coroutine_wrap_aux
-  |  lwz L:CARG1, CFUNC:RB->upvalue[0].gcr
+  |  ld L:CARG1, CFUNC:RB->upvalue[0].gcr
+  |  clear_field L:CARG1
   |.endif
   |  lbz TMP0, L:CARG1->status
-  |   lp TMP1, L:CARG1->cframe
-  |    lp CARG2, L:CARG1->top
-  |  cmplwi cr0, TMP0, LUA_YIELD
-  |    lp TMP2, L:CARG1->base
-  |   cmplwi cr1, TMP1, 0
-  |   lwz TMP0, L:CARG1->maxstack
-  |    cmplw cr7, CARG2, TMP2
-  |   lwz PC, FRAME_PC(BASE)
+  |   ld TMP1, L:CARG1->cframe
+  |     la TMP3, L:CARG1->base
+  |     ld TMP2, 0(TMP3)
+  |     ld CARG2, 8(TMP3)
+  |  cmpldi cr0, TMP0, LUA_YIELD
+  |     add TMP3, CARG2, TMP0
+  |   cmpldi cr1, TMP1, 0
+  |     cmpd cr7, TMP3, TMP2
+  |   ld TMP0, L:CARG1->maxstack
+  |     beq cr7, ->fff_fallback
+  |     cmpld cr7, CARG2, TMP2
+  |   ld PC, FRAME_PC(BASE)
+  |  bge cr0, >9
+  |   addi CARG2, CARG2, 8
+  |9:
   |  crorc 4*cr6+lt, 4*cr0+gt, 4*cr1+eq		// st>LUA_YIELD || cframe!=0
   |   add TMP2, CARG2, NARGS8:RC
   |  crandc 4*cr6+gt, 4*cr7+eq, 4*cr0+eq	// base==top && st!=LUA_YIELD
-  |   cmplw cr1, TMP2, TMP0
+  |   cmpld cr1, TMP2, TMP0
   |  cror 4*cr6+lt, 4*cr6+lt, 4*cr6+gt
-  |   stw PC, SAVE_PC
+  |   std PC, SAVE_PC
   |  cror 4*cr6+lt, 4*cr6+lt, 4*cr1+gt		// cond1 || cond2 || stackov
-  |   stp BASE, L->base
+  |   std BASE, L->base
   |  blt cr6, ->fff_fallback
   |1:
   |.if resume
@@ -1626,11 +1516,11 @@ static void build_subroutines(BuildCtx *ctx)
   |  subi NARGS8:RC, NARGS8:RC, 8
   |  subi TMP2, TMP2, 8
   |.endif
-  |  stp TMP2, L:CARG1->top
+  |  std TMP2, L:CARG1->top
   |  li TMP1, 0
-  |  stp BASE, L->top
+  |  std BASE, L->top
   |2:  // Move args to coroutine.
-  |  cmpw TMP1, NARGS8:RC
+  |  cmpd TMP1, NARGS8:RC
   |   lfdx f0, BASE, TMP1
   |  beq >3
   |   stfdx f0, CARG2, TMP1
@@ -1643,59 +1533,59 @@ static void build_subroutines(BuildCtx *ctx)
   |  bl ->vm_resume			// (lua_State *L, TValue *base, 0, 0)
   |  // Returns thread status.
   |4:
-  |  lp TMP2, L:SAVE0->base
-  |   cmplwi CRET1, LUA_YIELD
-  |  lp TMP3, L:SAVE0->top
+  |  ld TMP2, L:SAVE0->base
+  |   cmpldi CRET1, LUA_YIELD
+  |  ld TMP3, L:SAVE0->top
   |    li_vmstate INTERP
-  |  lp BASE, L->base
-  |    stw L, DISPATCH_GL(cur_L)(DISPATCH)
+  |  ld BASE, L->base
+  |    std L, DISPATCH_GL(cur_L)(DISPATCH)
   |    st_vmstate
   |   bgt >8
   |  sub RD, TMP3, TMP2
-  |   lwz TMP0, L->maxstack
-  |  cmplwi RD, 0
+  |   ld TMP0, L->maxstack
+  |  cmpldi RD, 0
   |   add TMP1, BASE, RD
   |  beq >6				// No results?
-  |  cmplw TMP1, TMP0
+  |  cmpld TMP1, TMP0
   |   li TMP1, 0
   |  bgt >9				// Need to grow stack?
   |
   |  subi TMP3, RD, 8
-  |   stp TMP2, L:SAVE0->top		// Clear coroutine stack.
+  |   std TMP2, L:SAVE0->top		// Clear coroutine stack.
   |5:  // Move results from coroutine.
-  |  cmplw TMP1, TMP3
+  |  cmpld TMP1, TMP3
   |   lfdx f0, TMP2, TMP1
   |   stfdx f0, BASE, TMP1
   |    addi TMP1, TMP1, 8
   |  bne <5
   |6:
-  |  andix. TMP0, PC, FRAME_TYPE
+  |  andi. TMP0, PC, FRAME_TYPE
   |.if resume
-  |  li TMP1, LJ_TTRUE
+  |  set_bool TMP1, LJ_TTRUE
   |   la RA, -8(BASE)
-  |  stw TMP1, -8(BASE)			// Prepend true to results.
+  |  std TMP1, -8(BASE)			// Prepend true to results.
   |  addi RD, RD, 16
   |.else
   |  mr RA, BASE
   |  addi RD, RD, 8
   |.endif
   |7:
-  |    stw PC, SAVE_PC
+  |    std PC, SAVE_PC
   |   mr MULTRES, RD
   |  beq ->BC_RET_Z
   |  b ->vm_return
   |
   |8:  // Coroutine returned with error (at co->top-1).
   |.if resume
-  |  andix. TMP0, PC, FRAME_TYPE
+  |  andi. TMP0, PC, FRAME_TYPE
   |  la TMP3, -8(TMP3)
-  |   li TMP1, LJ_TFALSE
+  |   set_bool TMP1, LJ_TFALSE
   |  lfd f0, 0(TMP3)
-  |   stp TMP3, L:SAVE0->top		// Remove error from coroutine stack.
+  |   std TMP3, L:SAVE0->top		// Remove error from coroutine stack.
   |    li RD, (2+1)*8
-  |   stw TMP1, -8(BASE)		// Prepend false to results.
-  |    la RA, -8(BASE)
-  |  stfd f0, 0(BASE)			// Copy error message.
+  |   std TMP1, -16(BASE)		// Prepend false to results.
+  |    la RA, -16(BASE)
+  |  stfd f0, -8(BASE)			// Copy error message.
   |  b <7
   |.else
   |  mr CARG1, L
@@ -1705,7 +1595,7 @@ static void build_subroutines(BuildCtx *ctx)
   |
   |9:  // Handle stack expansion on return from yield.
   |  mr CARG1, L
-  |  srwi CARG2, RD, 3
+  |  srdi CARG2, RD, 3
   |  bl extern lj_state_growstack	// (lua_State *L, int n)
   |  li CRET1, 0
   |  b <4
@@ -1715,68 +1605,63 @@ static void build_subroutines(BuildCtx *ctx)
   |  coroutine_resume_wrap 0		// coroutine.wrap
   |
   |.ffunc coroutine_yield
-  |  lp TMP0, L->cframe
+  |  ld TMP0, L->cframe
   |   add TMP1, BASE, NARGS8:RC
-  |   stp BASE, L->base
-  |  andix. TMP0, TMP0, CFRAME_RESUME
-  |   stp TMP1, L->top
+  |   std BASE, L->base
+  |  andi. TMP0, TMP0, CFRAME_RESUME
+  |   std TMP1, L->top
   |    li CRET1, LUA_YIELD
   |  beq ->fff_fallback
-  |   stp ZERO, L->cframe
+  |   std ZERO, L->cframe
   |    stb CRET1, L->status
   |  b ->vm_leave_unw
   |
   |//-- Math library -------------------------------------------------------
   |
   |.ffunc_1 math_abs
-  |  checknum CARG3
-  |.if DUALNUM
+  |  checknum_noclear CARG1
   |  bne >2
-  |  srawi TMP1, CARG1, 31
+  |  get_value CARG1
+  |  sradi TMP1, CARG1, 31
   |  xor TMP2, TMP1, CARG1
-  |.if GPR64
   |  lus TMP0, 0x8000
   |  sub CARG1, TMP2, TMP1
-  |  cmplw CARG1, TMP0
+  |  get_value CARG1
+  |  cmpld CARG1, TMP0
   |  beq >1
-  |.else
-  |  sub. CARG1, TMP2, TMP1
-  |  blt >1
-  |.endif
   |->fff_resi:
-  |  lwz PC, FRAME_PC(BASE)
-  |  la RA, -8(BASE)
-  |  stw TISNUM, -8(BASE)
-  |  stw CRET1, -4(BASE)
+  |  ld PC, FRAME_PC(BASE)
+  |  la RA, -16(BASE)
+  |  add_oper_type CRET1, TISNUM
+  |  std CRET1, -16(BASE)
   |  b ->fff_res1
   |1:
-  |  lus CARG3, 0x41e0	// 2^31.
-  |  li CARG1, 0
+  |  lus CARG1, 0x41e0	// 2^31.
+  |  sldi CARG1, CARG1, 32
   |  b ->fff_restv
   |2:
-  |.endif
   |  bge ->fff_fallback
-  |  rlwinm CARG3, CARG3, 0, 1, 31
+  |  clrldi CARG1,CARG1,1
   |  // Fallthrough.
   |
   |->fff_restv:
-  |  // CARG3/CARG1 = TValue result.
-  |  lwz PC, FRAME_PC(BASE)
-  |   stw CARG3, -8(BASE)
-  |  la RA, -8(BASE)
-  |   stw CARG1, -4(BASE)
+  |  // CARG1 = TValue result.
+  |  ld PC, FRAME_PC(BASE)
+  |   std CARG1, -16(BASE)
+  |  la RA, -16(BASE)
   |->fff_res1:
   |  // RA = results, PC = return.
   |  li RD, (1+1)*8
   |->fff_res:
   |  // RA = results, RD = (nresults+1)*8, PC = return.
-  |  andix. TMP0, PC, FRAME_TYPE
+  |  andi. TMP0, PC, FRAME_TYPE
   |   mr MULTRES, RD
+  |  subi RA, BASE, 16
   |  bney ->vm_return
   |  lwz INS, -4(PC)
   |  decode_RB8 RB, INS
   |5:
-  |  cmplw RB, RD			// More results expected?
+  |  cmpld RB, RD			// More results expected?
   |   decode_RA8 TMP0, INS
   |  bgt >6
   |  ins_next1
@@ -1787,7 +1672,7 @@ static void build_subroutines(BuildCtx *ctx)
   |6:  // Fill up results with nil.
   |  subi TMP1, RD, 8
   |   addi RD, RD, 8
-  |  stwx TISNIL, RA, TMP1
+  |  stdx TISNIL, RA, TMP1
   |  b <5
   |
   |.macro math_extern, func
@@ -1802,91 +1687,23 @@ static void build_subroutines(BuildCtx *ctx)
   |  b ->fff_resn
   |.endmacro
   |
-  |.macro math_round, func
-  |  .ffunc_1 math_ .. func
-  |   checknum CARG3; beqy ->fff_restv
-  |  rlwinm TMP2, CARG3, 12, 21, 31
-  |   bge ->fff_fallback
-  |  addic. TMP2, TMP2, -1023		// exp = exponent(x) - 1023
-  |  cmplwi cr1, TMP2, 31		// 0 <= exp < 31?
-  |   subfic TMP0, TMP2, 31
-  |  blt >3
-  |  slwi TMP1, CARG3, 11
-  |   srwi TMP3, CARG1, 21
-  |  oris TMP1, TMP1, 0x8000
-  |   addi TMP2, TMP2, 1
-  |  or TMP1, TMP1, TMP3
-  |   slwi CARG2, CARG1, 11
-  |  bge cr1, >4
-  |   slw TMP3, TMP1, TMP2
-  |  srw RD, TMP1, TMP0
-  |   or TMP3, TMP3, CARG2
-  |  srawi TMP2, CARG3, 31
-  |.if "func" == "floor"
-  |  and TMP1, TMP3, TMP2
-  |  addic TMP0, TMP1, -1
-  |  subfe TMP1, TMP0, TMP1
-  |  add CARG1, RD, TMP1
-  |  xor CARG1, CARG1, TMP2
-  |  sub CARG1, CARG1, TMP2
-  |  b ->fff_resi
-  |.else
-  |  andc TMP1, TMP3, TMP2
-  |  addic TMP0, TMP1, -1
-  |  subfe TMP1, TMP0, TMP1
-  |  add CARG1, RD, TMP1
-  |  cmpw CARG1, RD
-  |  xor CARG1, CARG1, TMP2
-  |  sub CARG1, CARG1, TMP2
-  |  bge ->fff_resi
-  |  // Overflow to 2^31.
-  |  lus CARG3, 0x41e0			// 2^31.
-  |  li CARG1, 0
-  |  b ->fff_restv
-  |.endif
-  |3:  // |x| < 1
-  |  slwi TMP2, CARG3, 1
-  |   srawi TMP1, CARG3, 31
-  |  or TMP2, CARG1, TMP2		// ztest = (hi+hi) | lo
-  |.if "func" == "floor"
-  |  and TMP1, TMP2, TMP1		// (ztest & sign) == 0 ? 0 : -1
-  |  subfic TMP2, TMP1, 0
-  |  subfe CARG1, CARG1, CARG1
-  |.else
-  |  andc TMP1, TMP2, TMP1		// (ztest & ~sign) == 0 ? 0 : 1
-  |  addic TMP2, TMP1, -1
-  |  subfe CARG1, TMP2, TMP1
-  |.endif
-  |  b ->fff_resi
-  |4:  // exp >= 31. Check for -(2^31).
-  |  xoris TMP1, TMP1, 0x8000
-  |  srawi TMP2, CARG3, 31
-  |.if "func" == "floor"
-  |  or TMP1, TMP1, CARG2
-  |.endif
-  |.if PPE
-  |  orc TMP1, TMP1, TMP2
-  |  cmpwi TMP1, 0
-  |.else
-  |  orc. TMP1, TMP1, TMP2
-  |.endif
-  |  crand 4*cr0+eq, 4*cr0+eq, 4*cr1+eq
-  |  lus CARG1, 0x8000			// -(2^31).
-  |  beqy ->fff_resi
-  |5:
+  |.macro math_round, func, round
+  |  .ffunc math_ .. func
+  |  ld CARG1, 0(BASE)
+  |  cmplwi NARGS8:RC, 8
   |  lfd FARG1, 0(BASE)
-  |  blex func
+  |  blt ->fff_fallback
+  |  checknum CARG1; bgt ->fff_fallback
+  |  srdi TMP0, CARG1, 32
+  |  sldi TMP1, TISNUM, 15
+  |  cmpld TMP0, TMP1
+  |  beq ->fff_restv
+  |  round FARG1, FARG1
   |  b ->fff_resn
   |.endmacro
   |
-  |.if DUALNUM
-  |  math_round floor
-  |  math_round ceil
-  |.else
-  |  // NYI: use internal implementation.
-  |  math_extern floor
-  |  math_extern ceil
-  |.endif
+  |  math_round floor, frim
+  |  math_round ceil, frip
   |
   |.if SQRT
   |.ffunc_n math_sqrt
@@ -1897,8 +1714,8 @@ static void build_subroutines(BuildCtx *ctx)
   |.endif
   |
   |.ffunc math_log
-  |  cmplwi NARGS8:RC, 8
-  |   lwz CARG3, 0(BASE)
+  |  cmpldi NARGS8:RC, 8
+  |   ld CARG3, 0(BASE)
   |    lfd FARG1, 0(BASE)
   |  bne ->fff_fallback			// Need exactly 1 argument.
   |  checknum CARG3; bge ->fff_fallback
@@ -1920,82 +1737,55 @@ static void build_subroutines(BuildCtx *ctx)
   |  math_extern2 atan2
   |  math_extern2 fmod
   |
-  |.if DUALNUM
   |.ffunc math_ldexp
-  |  cmplwi NARGS8:RC, 16
-  |   lwz CARG3, 0(BASE)
-  |    lfd FARG1, 0(BASE)
-  |   lwz CARG4, 8(BASE)
-  |.if GPR64
-  |    lwz CARG2, 12(BASE)
-  |.else
-  |    lwz CARG1, 12(BASE)
-  |.endif
+  |  cmpldi NARGS8:RC, 16
+  |   ld CARG1, 0(BASE)
+  |    ld CARG2, 8(BASE)
   |  blt ->fff_fallback
-  |  checknum CARG3; bge ->fff_fallback
-  |  checknum CARG4; bne ->fff_fallback
-  |.else
-  |.ffunc_nn math_ldexp
-  |.if GPR64
-  |  toint CARG2, FARG2
-  |.else
-  |  toint CARG1, FARG2
-  |.endif
-  |.endif
+  |  checknum_noclear CARG1; bge ->fff_fallback
+  |  checknum_noclear CARG2; bne ->fff_fallback
+  |  std CARG1, 0(BASE)
+  |  lfd FARG1, 0(BASE)
+  |  std TOCREG, SAVE_TOC
   |  blex ldexp
   |  b ->fff_resn
   |
   |.ffunc_n math_frexp
-  |.if GPR64
   |  la CARG2, DISPATCH_GL(tmptv)(DISPATCH)
-  |.else
-  |  la CARG1, DISPATCH_GL(tmptv)(DISPATCH)
-  |.endif
-  |   lwz PC, FRAME_PC(BASE)
+  |   ld PC, FRAME_PC(BASE)
   |  blex frexp
   |   lwz TMP1, DISPATCH_GL(tmptv)(DISPATCH)
-  |   la RA, -8(BASE)
-  |.if not DUALNUM
-  |   tonum_i FARG2, TMP1
-  |.endif
+  |   la RA, -16(BASE)
   |  stfd FARG1, 0(RA)
   |  li RD, (2+1)*8
-  |.if DUALNUM
-  |   stw TISNUM, 8(RA)
-  |   stw TMP1, 12(RA)
-  |.else
-  |   stfd FARG2, 8(RA)
-  |.endif
+  |   add TMP1, TMP1, TISNUM
+  |   std TMP1, 8(RA)
   |  b ->fff_res
   |
   |.ffunc_n math_modf
-  |.if GPR64
-  |  la CARG2, -8(BASE)
-  |.else
-  |  la CARG1, -8(BASE)
-  |.endif
-  |   lwz PC, FRAME_PC(BASE)
+  |  la CARG2, -16(BASE)
+  |   ld PC, FRAME_PC(BASE)
   |  blex modf
-  |   la RA, -8(BASE)
-  |  stfd FARG1, 0(BASE)
+  |   la RA, -16(BASE)
+  |  stfd FARG1, -8(BASE)
   |  li RD, (2+1)*8
   |  b ->fff_res
   |
   |.macro math_minmax, name, ismax
-  |.if DUALNUM
   |  .ffunc_1 name
-  |  checknum CARG3
+  |  checknum_noclear CARG1
   |   addi TMP1, BASE, 8
   |   add TMP2, BASE, NARGS8:RC
   |  bne >4
   |1:  // Handle integers.
-  |  lwz CARG4, 0(TMP1)
-  |   cmplw cr1, TMP1, TMP2
-  |  lwz CARG2, 4(TMP1)
-  |   bge cr1, ->fff_resi
-  |  checknum CARG4
+  |  ld CARG2, 0(TMP1)
+  |   cmpld cr1, TMP1, TMP2
+  |   bge cr1, ->fff_restv
+  |  checknum_noclear CARG2
   |   xoris TMP0, CARG1, 0x8000
+  |   clrldi TMP0, TMP0, 32
   |   xoris TMP3, CARG2, 0x8000
+  |   clrldi TMP3, TMP3, 32
   |  bne >3
   |  subfc TMP3, TMP3, TMP0
   |  subfe TMP0, TMP0, TMP0
@@ -2005,9 +1795,7 @@ static void build_subroutines(BuildCtx *ctx)
   |  and TMP3, TMP3, TMP0
   |.endif
   |  add CARG1, TMP3, CARG2
-  |.if GPR64
-  |  rldicl CARG1, CARG1, 0, 32
-  |.endif
+  |   add_oper_type CARG1, TISNUM
   |   addi TMP1, TMP1, 8
   |  b <1
   |3:
@@ -2020,11 +1808,11 @@ static void build_subroutines(BuildCtx *ctx)
   |   lfd FARG1, 0(BASE)
   |  bge ->fff_fallback
   |5:  // Handle numbers.
-  |  lwz CARG4, 0(TMP1)
-  |   cmplw cr1, TMP1, TMP2
+  |  ld CARG2, 0(TMP1)
+  |   cmpld cr1, TMP1, TMP2
   |  lfd FARG2, 0(TMP1)
   |   bge cr1, ->fff_resn
-  |  checknum CARG4; bge >7
+  |  checknum_noclear CARG2; bge >7
   |6:
   |  fsub f0, FARG1, FARG2
   |   addi TMP1, TMP1, 8
@@ -2035,29 +1823,10 @@ static void build_subroutines(BuildCtx *ctx)
   |.endif
   |  b <5
   |7:  // Convert integer to number and continue above.
-  |   lwz CARG2, 4(TMP1)
+  |   ld CARG2, 0(TMP1)
   |  bne ->fff_fallback
   |  tonum_i FARG2, CARG2
   |  b <6
-  |.else
-  |  .ffunc_n name
-  |  li TMP1, 8
-  |1:
-  |   lwzx CARG2, BASE, TMP1
-  |   lfdx FARG2, BASE, TMP1
-  |  cmplw cr1, TMP1, NARGS8:RC
-  |   checknum CARG2
-  |  bge cr1, ->fff_resn
-  |   bge ->fff_fallback
-  |  fsub f0, FARG1, FARG2
-  |   addi TMP1, TMP1, 8
-  |.if ismax
-  |  fsel FARG1, f0, FARG1, FARG2
-  |.else
-  |  fsel FARG1, f0, FARG2, FARG1
-  |.endif
-  |  b <1
-  |.endif
   |.endmacro
   |
   |  math_minmax math_min, 0
@@ -2066,132 +1835,90 @@ static void build_subroutines(BuildCtx *ctx)
   |//-- String library -----------------------------------------------------
   |
   |.ffunc string_byte			// Only handle the 1-arg case here.
-  |  cmplwi NARGS8:RC, 8
-  |   lwz CARG3, 0(BASE)
-  |    lwz STR:CARG1, 4(BASE)
+  |  cmpldi NARGS8:RC, 8
+  |    ld STR:CARG1, 0(BASE)
   |  bne ->fff_fallback			// Need exactly 1 argument.
-  |   checkstr CARG3
+  |   checkstr CARG1
   |   bne ->fff_fallback
-  |  lwz TMP0, STR:CARG1->len
-  |.if DUALNUM
+  |  ld TMP0, STR:CARG1->len
   |   lbz CARG1, STR:CARG1[1]		// Access is always ok (NUL at end).
   |   li RD, (0+1)*8
-  |   lwz PC, FRAME_PC(BASE)
-  |  cmplwi TMP0, 0
-  |   la RA, -8(BASE)
+  |   ld PC, FRAME_PC(BASE)
+  |  cmpldi TMP0, 0
+  |   la RA, -16(BASE)
   |  beqy ->fff_res
   |  b ->fff_resi
-  |.else
-  |   lbz TMP1, STR:CARG1[1]		// Access is always ok (NUL at end).
-  |  addic TMP3, TMP0, -1		// RD = ((str->len != 0)+1)*8
-  |  subfe RD, TMP3, TMP0
-  |   stw TMP1, TONUM_LO		// Inlined tonum_u f0, TMP1.
-  |  addi RD, RD, 1
-  |   lfd f0, TONUM_D
-  |  la RA, -8(BASE)
-  |  lwz PC, FRAME_PC(BASE)
-  |   fsub f0, f0, TOBIT
-  |  slwi RD, RD, 3
-  |   stfd f0, 0(RA)
-  |  b ->fff_res
-  |.endif
   |
   |.ffunc string_char			// Only handle the 1-arg case here.
   |  ffgccheck
-  |  cmplwi NARGS8:RC, 8
-  |   lwz CARG3, 0(BASE)
-  |.if DUALNUM
-  |    lwz TMP0, 4(BASE)
+  |  cmpldi NARGS8:RC, 8
+  |   ld CARG3, 0(BASE)
   |  bne ->fff_fallback			// Exactly 1 argument.
   |  checknum CARG3; bne ->fff_fallback
-  |   la CARG2, 7(BASE)
-  |.else
-  |    lfd FARG1, 0(BASE)
-  |  bne ->fff_fallback			// Exactly 1 argument.
-  |  checknum CARG3; bge ->fff_fallback
-  |  toint TMP0, FARG1
-  |   la CARG2, TMPD_BLO
-  |.endif
+  |   la CARG2, 0(BASE)			// Points to stack. Little-endian.
+
+  |    cmpldi CARG3, 255
   |   li CARG3, 1
-  |  cmplwi TMP0, 255; bgt ->fff_fallback
+  |    bgt ->fff_fallback
   |->fff_newstr:
   |  mr CARG1, L
-  |  stp BASE, L->base
-  |  stw PC, SAVE_PC
+  |  std BASE, L->base
+  |  std PC, SAVE_PC
   |  bl extern lj_str_new		// (lua_State *L, char *str, size_t l)
   |->fff_resstr:
   |  // Returns GCstr *.
-  |  lp BASE, L->base
-  |  li CARG3, LJ_TSTR
+  |  ld BASE, L->base
+  |  li TMP1, LJ_TSTR
+  |  set_oper_type, TMP1, TMP1
+  |  add CARG1, CARG1, TMP1
   |  b ->fff_restv
   |
   |.ffunc string_sub
   |  ffgccheck
-  |  cmplwi NARGS8:RC, 16
-  |   lwz CARG3, 16(BASE)
-  |.if not DUALNUM
-  |    lfd f0, 16(BASE)
-  |.endif
-  |   lwz TMP0, 0(BASE)
-  |    lwz STR:CARG1, 4(BASE)
-  |  blt ->fff_fallback
-  |   lwz CARG2, 8(BASE)
-  |.if DUALNUM
-  |    lwz TMP1, 12(BASE)
-  |.else
-  |    lfd f1, 8(BASE)
-  |.endif
-  |   li TMP2, -1
+  |  cmpldi NARGS8:RC, 16
+  |   ld STR:CARG1, 0(BASE)
+  |   blt ->fff_fallback
+  |   ld TMP1, 8(BASE)
+  |    get_oper_type TMP0,CARG1
+  |    get_oper_type CARG2,TMP1
+  |   li TMP2,-1
   |  beq >1
-  |.if DUALNUM
-  |  checknum CARG3
-  |   lwz TMP2, 20(BASE)
+  |   ld TMP2, 16(BASE)
+  |   get_oper_type CARG3,TMP2
+  |   checknum TMP2
   |  bne ->fff_fallback
   |1:
-  |  checknum CARG2; bne ->fff_fallback
-  |.else
-  |  checknum CARG3; bge ->fff_fallback
-  |  toint TMP2, f0
-  |1:
-  |  checknum CARG2; bge ->fff_fallback
-  |.endif
-  |  checkstr TMP0; bne ->fff_fallback
-  |.if not DUALNUM
-  |   toint TMP1, f1
-  |.endif
+  |  checknum TMP1; bne ->fff_fallback
+  |  checkstr CARG1; bne ->fff_fallback
   |   lwz TMP0, STR:CARG1->len
-  |  cmplw TMP0, TMP2			// len < end? (unsigned compare)
+  |  cmpld TMP0, TMP2			// len < end? (unsigned compare)
   |   addi TMP3, TMP2, 1
   |  blt >5
   |2:
-  |  cmpwi TMP1, 0			// start <= 0?
+  |  cmpdi TMP1, 0			// start <= 0?
   |   add TMP3, TMP1, TMP0
   |  ble >7
   |3:
   |  sub CARG3, TMP2, TMP1
   |    addi CARG2, STR:CARG1, #STR-1
-  |  srawi TMP0, CARG3, 31
+  |  sradi TMP0, CARG3, 31
   |   addi CARG3, CARG3, 1
   |    add CARG2, CARG2, TMP1
   |  andc CARG3, CARG3, TMP0
-  |.if GPR64
-  |  rldicl CARG2, CARG2, 0, 32
-  |  rldicl CARG3, CARG3, 0, 32
-  |.endif
   |  b ->fff_newstr
   |
   |5:  // Negative end or overflow.
-  |  cmpw TMP0, TMP2			// len >= end? (signed compare)
+  |  cmpd TMP0, TMP2			// len >= end? (signed compare)
   |   add TMP2, TMP0, TMP3		// Negative end: end = end+len+1.
   |  bge <2
   |   mr TMP2, TMP0			// Overflow: end = len.
   |  b <2
   |
   |7:  // Negative start or underflow.
-  |  .gpr64 extsw TMP1, TMP1
+  |  extsw TMP1, TMP1
   |  addic CARG3, TMP1, -1
   |  subfe CARG3, CARG3, CARG3
-  |   srawi CARG2, TMP3, 31		// Note: modifies carry.
+  |   sradi CARG2, TMP3, 31		// Note: modifies carry.
   |  andc TMP3, TMP3, CARG3
   |   andc TMP1, TMP3, CARG2
   |  addi TMP1, TMP1, 1			// start = 1 + (start ? start+len : 0)
@@ -2200,18 +1927,17 @@ static void build_subroutines(BuildCtx *ctx)
   |.macro ffstring_op, name
   |  .ffunc string_ .. name
   |  ffgccheck
-  |  cmplwi NARGS8:RC, 8
-  |   lwz CARG3, 0(BASE)
-  |    lwz STR:CARG2, 4(BASE)
+  |  cmpldi NARGS8:RC, 8
+  |    ld STR:CARG2, 0(BASE)
   |  blt ->fff_fallback
-  |  checkstr CARG3
+  |  checkstr CARG2
   |   la SBUF:CARG1, DISPATCH_GL(tmpbuf)(DISPATCH)
   |  bne ->fff_fallback
-  |   lwz TMP0, SBUF:CARG1->b
-  |  stw L, SBUF:CARG1->L
-  |  stp BASE, L->base
-  |  stw PC, SAVE_PC
-  |   stw TMP0, SBUF:CARG1->p
+  |   ld TMP0, SBUF:CARG1->b
+  |  std L, SBUF:CARG1->L
+  |  std BASE, L->base
+  |  std PC, SAVE_PC
+  |   std TMP0, SBUF:CARG1->p
   |  bl extern lj_buf_putstr_ .. name
   |  bl extern lj_buf_tostr
   |  b ->fff_resstr
@@ -2224,42 +1950,30 @@ static void build_subroutines(BuildCtx *ctx)
   |//-- Bit library --------------------------------------------------------
   |
   |.macro .ffunc_bit, name
-  |.if DUALNUM
   |  .ffunc_1 bit_..name
-  |  checknum CARG3; bnel ->fff_tobit_fb
-  |.else
-  |  .ffunc_n bit_..name
-  |  fadd FARG1, FARG1, TOBIT
-  |  stfd FARG1, TMPD
-  |  lwz CARG1, TMPD_LO
-  |.endif
+  |  checknum CARG1; bnel ->fff_tobit_fb
   |.endmacro
   |
   |.macro .ffunc_bit_op, name, ins
   |  .ffunc_bit name
+  |   mr TMP0, CARG1
+  |   rldicl TMP0, TMP0, 0, 32
   |  addi TMP1, BASE, 8
   |  add TMP2, BASE, NARGS8:RC
   |1:
-  |  lwz CARG4, 0(TMP1)
-  |   cmplw cr1, TMP1, TMP2
-  |.if DUALNUM
-  |  lwz CARG2, 4(TMP1)
-  |.else
-  |  lfd FARG1, 0(TMP1)
-  |.endif
-  |   bgey cr1, ->fff_resi
-  |  checknum CARG4
-  |.if DUALNUM
+  |  ld CARG2, 0(TMP1)
+  |   cmpld cr1, TMP1, TMP2
+  |   bgey cr1, >9
+  |  checknum CARG2
   |  bnel ->fff_bitop_fb
-  |.else
-  |  fadd FARG1, FARG1, TOBIT
-  |  bge ->fff_fallback
-  |  stfd FARG1, TMPD
-  |  lwz CARG2, TMPD_LO
-  |.endif
-  |  ins CARG1, CARG1, CARG2
+  |  rldicl CARG2, CARG2, 0, 32
+  |  ins TMP0, TMP0, CARG2
   |   addi TMP1, TMP1, 8
   |  b <1
+  |9:
+  |  add CARG1, TMP0, TISNUM
+  |  b ->fff_restv
+  |
   |.endmacro
   |
   |.ffunc_bit_op band, and
@@ -2267,7 +1981,7 @@ static void build_subroutines(BuildCtx *ctx)
   |.ffunc_bit_op bxor, xor
   |
   |.ffunc_bit bswap
-  |  rotlwi TMP0, CARG1, 8
+  |  rlwinm TMP0, CARG1, 8, 0, 31
   |  rlwimi TMP0, CARG1, 24, 0, 7
   |  rlwimi TMP0, CARG1, 24, 16, 23
   |  mr CRET1, TMP0
@@ -2275,30 +1989,26 @@ static void build_subroutines(BuildCtx *ctx)
   |
   |.ffunc_bit bnot
   |  not CRET1, CARG1
+  |  rldicl CRET1, CRET1, 0, 32
+  |  add CRET1, CRET1, TISNUM
   |  b ->fff_resi
   |
   |.macro .ffunc_bit_sh, name, ins, shmod
-  |.if DUALNUM
   |  .ffunc_2 bit_..name
-  |  checknum CARG3; bnel ->fff_tobit_fb
+  |  checknum CARG1; bnel ->fff_tobit_fb
   |  // Note: no inline conversion from number for 2nd argument!
-  |  checknum CARG4; bne ->fff_fallback
-  |.else
-  |  .ffunc_nn bit_..name
-  |  fadd FARG1, FARG1, TOBIT
-  |  fadd FARG2, FARG2, TOBIT
-  |  stfd FARG1, TMPD
-  |  lwz CARG1, TMPD_LO
-  |  stfd FARG2, TMPD
-  |  lwz CARG2, TMPD_LO
-  |.endif
+  |  checknum CARG2; bne ->fff_fallback
+  |  rldicl TMP0, CARG1, 0, 32
+  |  rldicl TMP1, CARG2, 0, 32
   |.if shmod == 1
-  |  rlwinm CARG2, CARG2, 0, 27, 31
+  |  rlwinm TMP1, TMP1, 0, 27, 31
   |.elif shmod == 2
-  |  neg CARG2, CARG2
+  |  neg TMP1, TMP1
   |.endif
-  |  ins CRET1, CARG1, CARG2
-  |  b ->fff_resi
+  |  ins CARG1, TMP0, TMP1
+  |  rldicl CARG1, CARG1, 0, 32
+  |  add CARG1, CARG1, TISNUM
+  |  b ->fff_restv
   |.endmacro
   |
   |.ffunc_bit_sh lshift, slw, 1
@@ -2308,72 +2018,66 @@ static void build_subroutines(BuildCtx *ctx)
   |.ffunc_bit_sh ror, rotlw, 2
   |
   |.ffunc_bit tobit
-  |.if DUALNUM
-  |  b ->fff_resi
-  |.else
-  |->fff_resi:
-  |  tonum_i FARG1, CRET1
-  |.endif
+  |  rldicl TMP0, CARG1, 0, 32
+  |  add CARG1, TMP0, TISNUM
+  |  b ->fff_restv
+  |
   |->fff_resn:
-  |  lwz PC, FRAME_PC(BASE)
-  |  la RA, -8(BASE)
-  |  stfd FARG1, -8(BASE)
+  |  ld PC, FRAME_PC(BASE)
+  |  la RA, -16(BASE)
+  |  stfd FARG1, -16(BASE)
   |  b ->fff_res1
   |
   |// Fallback FP number to bit conversion.
   |->fff_tobit_fb:
-  |.if DUALNUM
   |  lfd FARG1, 0(BASE)
   |  bgt ->fff_fallback
   |  fadd FARG1, FARG1, TOBIT
   |  stfd FARG1, TMPD
-  |  lwz CARG1, TMPD_LO
+  |  ld CARG1, TMPD
   |  blr
-  |.endif
   |->fff_bitop_fb:
-  |.if DUALNUM
   |  lfd FARG1, 0(TMP1)
   |  bgt ->fff_fallback
   |  fadd FARG1, FARG1, TOBIT
   |  stfd FARG1, TMPD
-  |  lwz CARG2, TMPD_LO
+  |  ld CARG2, TMPD
   |  blr
-  |.endif
   |
   |//-----------------------------------------------------------------------
   |
   |->fff_fallback:			// Call fast function fallback handler.
   |  // BASE = new base, RB = CFUNC, RC = nargs*8
-  |  lp TMP3, CFUNC:RB->f
+  |  ld TMP3, CFUNC:RB->f
   |    add TMP1, BASE, NARGS8:RC
-  |   lwz PC, FRAME_PC(BASE)		// Fallback may overwrite PC.
+  |   ld PC, FRAME_PC(BASE)		// Fallback may overwrite PC.
   |    addi TMP0, TMP1, 8*LUA_MINSTACK
-  |     lwz TMP2, L->maxstack
-  |   stw PC, SAVE_PC			// Redundant (but a defined value).
-  |  .toc lp TMP3, 0(TMP3)
-  |  cmplw TMP0, TMP2
-  |     stp BASE, L->base
-  |    stp TMP1, L->top
+  |     ld TMP2, L->maxstack
+  |   std PC, SAVE_PC			// Redundant (but a defined value).
+  |  cmpld TMP0, TMP2
+  |     std BASE, L->base
+  |    std TMP1, L->top
   |   mr CARG1, L
   |  bgt >5				// Need to grow stack.
   |  mtctr TMP3
   |  bctrl				// (lua_State *L)
   |  // Either throws an error, or recovers and returns -1, 0 or nresults+1.
-  |  lp BASE, L->base
-  |  cmpwi CRET1, 0
-  |   slwi RD, CRET1, 3
-  |   la RA, -8(BASE)
+  |  ld BASE, L->base
+  |  cmpdi CRET1, 0
+  |   sldi RD, CRET1, 3
+  |   la RA, -16(BASE)
   |  bgt ->fff_res			// Returned nresults+1?
   |1:  // Returned 0 or -1: retry fast path.
-  |  lp TMP0, L->top
-  |   lwz LFUNC:RB, FRAME_FUNC(BASE)
+  |  ld TMP0, L->top
+  |   ld LFUNC:RB, FRAME_FUNC(BASE)
   |  sub NARGS8:RC, TMP0, BASE
   |  bne ->vm_call_tail			// Returned -1?
+  |  clear_field RB
   |  ins_callt				// Returned 0: retry fast path.
   |
   |// Reconstruct previous base for vmeta_call during tailcall.
   |->vm_call_tail:
-  |  andix. TMP0, PC, FRAME_TYPE
+  |  andi. TMP0, PC, FRAME_TYPE
   |   rlwinm TMP1, PC, 0, 0, 28
   |  bne >3
   |  lwz INS, -4(PC)
@@ -2386,24 +2090,25 @@ static void build_subroutines(BuildCtx *ctx)
   |5:  // Grow stack for fallback handler.
   |  li CARG2, LUA_MINSTACK
   |  bl extern lj_state_growstack	// (lua_State *L, int n)
-  |  lp BASE, L->base
-  |  cmpw TMP0, TMP0			// Set 4*cr0+eq to force retry.
+  |  ld BASE, L->base
+  |  cmpd TMP0, TMP0			// Set 4*cr0+eq to force retry.
   |  b <1
   |
   |->fff_gcstep:			// Call GC step function.
   |  // BASE = new base, RC = nargs*8
   |  mflr SAVE0
-  |   stp BASE, L->base
+  |   std BASE, L->base
   |  add TMP0, BASE, NARGS8:RC
-  |   stw PC, SAVE_PC			// Redundant (but a defined value).
-  |  stp TMP0, L->top
+  |   std PC, SAVE_PC			// Redundant (but a defined value).
+  |  std TMP0, L->top
   |  mr CARG1, L
   |  bl extern lj_gc_step		// (lua_State *L)
-  |   lp BASE, L->base
+  |   ld BASE, L->base
   |  mtlr SAVE0
-  |    lp TMP0, L->top
+  |    ld TMP0, L->top
   |   sub NARGS8:RC, TMP0, BASE
-  |   lwz CFUNC:RB, FRAME_FUNC(BASE)
+  |   ld CFUNC:RB, FRAME_FUNC(BASE)
+  |   clear_field CFUNC:RB
   |  blr
   |
   |//-----------------------------------------------------------------------
@@ -2411,39 +2116,26 @@ static void build_subroutines(BuildCtx *ctx)
   |//-----------------------------------------------------------------------
   |
   |->vm_record:				// Dispatch target for recording phase.
-  |.if JIT
-  |  lbz TMP3, DISPATCH_GL(hookmask)(DISPATCH)
-  |  andix. TMP0, TMP3, HOOK_VMEVENT	// No recording while in vmevent.
-  |  bne >5
-  |  // Decrement the hookcount for consistency, but always do the call.
-  |   lwz TMP2, DISPATCH_GL(hookcount)(DISPATCH)
-  |  andix. TMP0, TMP3, HOOK_ACTIVE
-  |  bne >1
-  |   subi TMP2, TMP2, 1
-  |  andi. TMP0, TMP3, LUA_MASKLINE|LUA_MASKCOUNT
-  |  beqy >1
-  |   stw TMP2, DISPATCH_GL(hookcount)(DISPATCH)
-  |  b >1
-  |.endif
+  |  NYI
   |
   |->vm_rethook:			// Dispatch target for return hooks.
   |  lbz TMP3, DISPATCH_GL(hookmask)(DISPATCH)
-  |  andix. TMP0, TMP3, HOOK_ACTIVE	// Hook already active?
+  |  andi. TMP0, TMP3, HOOK_ACTIVE	// Hook already active?
   |  beq >1
   |5:  // Re-dispatch to static ins.
-  |  addi TMP1, TMP1, GG_DISP2STATIC	// Assumes decode_OPP TMP1, INS.
-  |  lpx TMP0, DISPATCH, TMP1
+  |  addi TMP1, TMP1, GG_DISP2STATIC	// Assumes decode_OP8 TMP1, INS.
+  |  ldx TMP0, DISPATCH, TMP1
   |  mtctr TMP0
   |  bctr
   |
   |->vm_inshook:			// Dispatch target for instr/line hooks.
   |  lbz TMP3, DISPATCH_GL(hookmask)(DISPATCH)
   |  lwz TMP2, DISPATCH_GL(hookcount)(DISPATCH)
-  |  andix. TMP0, TMP3, HOOK_ACTIVE	// Hook already active?
+  |  andi. TMP0, TMP3, HOOK_ACTIVE	// Hook already active?
   |   rlwinm TMP0, TMP3, 31-LUA_HOOKLINE, 31, 0
   |  bne <5
   |
-  |   cmpwi cr1, TMP0, 0
+  |   cmpdi cr1, TMP0, 0
   |  addic. TMP2, TMP2, -1
   |   beq cr1, <5
   |  stw TMP2, DISPATCH_GL(hookcount)(DISPATCH)
@@ -2451,20 +2143,20 @@ static void build_subroutines(BuildCtx *ctx)
   |   bge cr1, <5
   |1:
   |  mr CARG1, L
-  |   stw MULTRES, SAVE_MULTRES
+  |   std MULTRES, SAVE_MULTRES
   |  mr CARG2, PC
-  |   stp BASE, L->base
+  |   std BASE, L->base
   |  // SAVE_PC must hold the _previous_ PC. The callee updates it with PC.
   |  bl extern lj_dispatch_ins		// (lua_State *L, const BCIns *pc)
   |3:
-  |  lp BASE, L->base
+  |  ld BASE, L->base
   |4:  // Re-dispatch to static ins.
   |  lwz INS, -4(PC)
-  |  decode_OPP TMP1, INS
+  |  decode_OP8 TMP1, INS
   |   decode_RB8 RB, INS
   |  addi TMP1, TMP1, GG_DISP2STATIC
   |   decode_RD8 RD, INS
-  |  lpx TMP0, DISPATCH, TMP1
+  |  ldx TMP0, DISPATCH, TMP1
   |   decode_RA8 RA, INS
   |   decode_RC8 RC, INS
   |  mtctr TMP0
@@ -2472,25 +2164,11 @@ static void build_subroutines(BuildCtx *ctx)
   |
   |->cont_hook:				// Continue from hook yield.
   |  addi PC, PC, 4
-  |  lwz MULTRES, -20(RB)		// Restore MULTRES for *M ins.
+  |  ld MULTRES, -40(RB)		// Restore MULTRES for *M ins.
   |  b <4
   |
   |->vm_hotloop:			// Hot loop counter underflow.
-  |.if JIT
-  |  lwz LFUNC:TMP1, FRAME_FUNC(BASE)
-  |   addi CARG1, DISPATCH, GG_DISP2J
-  |   stw PC, SAVE_PC
-  |  lwz TMP1, LFUNC:TMP1->pc
-  |   mr CARG2, PC
-  |   stw L, DISPATCH_J(L)(DISPATCH)
-  |  lbz TMP1, PC2PROTO(framesize)(TMP1)
-  |   stp BASE, L->base
-  |  slwi TMP1, TMP1, 3
-  |  add TMP1, BASE, TMP1
-  |  stp TMP1, L->top
-  |  bl extern lj_trace_hot		// (jit_State *J, const BCIns *pc)
-  |  b <3
-  |.endif
+  |  NYI
   |
   |->vm_callhook:			// Dispatch target for call hooks.
   |  mr CARG2, PC
@@ -2504,83 +2182,36 @@ static void build_subroutines(BuildCtx *ctx)
   |1:
   |.endif
   |  add TMP0, BASE, RC
-  |   stw PC, SAVE_PC
+  |   std PC, SAVE_PC
   |  mr CARG1, L
-  |   stp BASE, L->base
+  |   std BASE, L->base
   |  sub RA, RA, BASE
-  |   stp TMP0, L->top
+  |   std TMP0, L->top
   |  bl extern lj_dispatch_call		// (lua_State *L, const BCIns *pc)
   |  // Returns ASMFunction.
-  |  lp BASE, L->base
-  |   lp TMP0, L->top
-  |   stw ZERO, SAVE_PC			// Invalidate for subsequent line hook.
+  |  ld BASE, L->base
+  |   ld TMP0, L->top
+  |   std ZERO, SAVE_PC			// Invalidate for subsequent line hook.
   |  sub NARGS8:RC, TMP0, BASE
   |  add RA, BASE, RA
-  |  lwz LFUNC:RB, FRAME_FUNC(BASE)
+  |  ld LFUNC:RB, FRAME_FUNC(BASE)
+  |  clear_field RB
   |  lwz INS, -4(PC)
   |  mtctr CRET1
   |  bctr
   |
   |->cont_stitch:			// Trace stitching.
-  |.if JIT
-  |  // RA = resultptr, RB = meta base
-  |  lwz INS, -4(PC)
-  |    lwz TMP3, -20(RB)		// Save previous trace number.
-  |   addic. TMP1, MULTRES, -8
-  |  decode_RA8 RC, INS			// Call base.
-  |   beq >2
-  |1:  // Move results down.
-  |  lfd f0, 0(RA)
-  |   addic. TMP1, TMP1, -8
-  |    addi RA, RA, 8
-  |  stfdx f0, BASE, RC
-  |    addi RC, RC, 8
-  |   bne <1
-  |2:
-  |   decode_RA8 RA, INS
-  |   decode_RB8 RB, INS
-  |   add RA, RA, RB
-  |  lwz TMP1, DISPATCH_J(trace)(DISPATCH)
-  |3:
-  |   cmplw RA, RC
-  |   bgt >9				// More results wanted?
-  |
-  |  slwi TMP2, TMP3, 2
-  |  lwzx TRACE:TMP2, TMP1, TMP2
-  |  cmpwi TRACE:TMP2, 0
-  |  beq ->cont_nop
-  |  lhz RD, TRACE:TMP2->link
-  |  cmpw RD, TMP3
-  |   cmpwi cr1, RD, 0
-  |  beq ->cont_nop			// Blacklisted.
-  |    slwi RD, RD, 3
-  |   bne cr1, =>BC_JLOOP		// Jump to stitched trace.
-  |
-  |  // Stitch a new trace to the previous trace.
-  |  stw TMP3, DISPATCH_J(exitno)(DISPATCH)
-  |  stp L, DISPATCH_J(L)(DISPATCH)
-  |  stp BASE, L->base
-  |  addi CARG1, DISPATCH, GG_DISP2J
-  |  mr CARG2, PC
-  |  bl extern lj_dispatch_stitch	// (jit_State *J, const BCIns *pc)
-  |  lp BASE, L->base
-  |  b ->cont_nop
-  |
-  |9:
-  |  stwx TISNIL, BASE, RC
-  |  addi RC, RC, 8
-  |  b <3
-  |.endif
+  |  NYI
   |
   |->vm_profhook:			// Dispatch target for profiler hook.
 #if LJ_HASPROFILE
   |  mr CARG1, L
-  |   stw MULTRES, SAVE_MULTRES
+  |   std MULTRES, SAVE_MULTRES
   |  mr CARG2, PC
-  |   stp BASE, L->base
+  |   std BASE, L->base
   |  bl extern lj_dispatch_profile	// (lua_State *L, const BCIns *pc)
   |  // HOOK_PROFILE is off again, so re-dispatch to dynamic instruction.
-  |  lp BASE, L->base
+  |  ld BASE, L->base
   |  subi PC, PC, 4
   |  b ->cont_nop
 #endif
@@ -2589,131 +2220,10 @@ static void build_subroutines(BuildCtx *ctx)
   |//-- Trace exit handler -------------------------------------------------
   |//-----------------------------------------------------------------------
   |
-  |.macro savex_, a, b, c, d
-  |  stfd f..a, 16+a*8(sp)
-  |  stfd f..b, 16+b*8(sp)
-  |  stfd f..c, 16+c*8(sp)
-  |  stfd f..d, 16+d*8(sp)
-  |.endmacro
-  |
   |->vm_exit_handler:
-  |.if JIT
-  |  addi sp, sp, -(16+32*8+32*4)
-  |  stmw r2, 16+32*8+2*4(sp)
-  |    addi DISPATCH, JGL, -GG_DISP2G-32768
-  |    li CARG2, ~LJ_VMST_EXIT
-  |   lwz CARG1, 16+32*8+32*4(sp)	// Get stack chain.
-  |    stw CARG2, DISPATCH_GL(vmstate)(DISPATCH)
-  |  savex_ 0,1,2,3
-  |   stw CARG1, 0(sp)			// Store extended stack chain.
-  |   clrso TMP1
-  |  savex_ 4,5,6,7
-  |   addi CARG2, sp, 16+32*8+32*4	// Recompute original value of sp.
-  |  savex_ 8,9,10,11
-  |   stw CARG2, 16+32*8+1*4(sp)	// Store sp in RID_SP.
-  |  savex_ 12,13,14,15
-  |   mflr CARG3
-  |   li TMP1, 0
-  |  savex_ 16,17,18,19
-  |   stw TMP1, 16+32*8+0*4(sp)		// Clear RID_TMP.
-  |  savex_ 20,21,22,23
-  |   lhz CARG4, 2(CARG3)		// Load trace number.
-  |  savex_ 24,25,26,27
-  |  lwz L, DISPATCH_GL(cur_L)(DISPATCH)
-  |  savex_ 28,29,30,31
-  |   sub CARG3, TMP0, CARG3		// Compute exit number.
-  |  lp BASE, DISPATCH_GL(jit_base)(DISPATCH)
-  |   srwi CARG3, CARG3, 2
-  |  stp L, DISPATCH_J(L)(DISPATCH)
-  |   subi CARG3, CARG3, 2
-  |  stp BASE, L->base
-  |   stw CARG4, DISPATCH_J(parent)(DISPATCH)
-  |  stw TMP1, DISPATCH_GL(jit_base)(DISPATCH)
-  |  addi CARG1, DISPATCH, GG_DISP2J
-  |   stw CARG3, DISPATCH_J(exitno)(DISPATCH)
-  |  addi CARG2, sp, 16
-  |  bl extern lj_trace_exit		// (jit_State *J, ExitState *ex)
-  |  // Returns MULTRES (unscaled) or negated error code.
-  |  lp TMP1, L->cframe
-  |  lwz TMP2, 0(sp)
-  |   lp BASE, L->base
-  |.if GPR64
-  |  rldicr sp, TMP1, 0, 61
-  |.else
-  |  rlwinm sp, TMP1, 0, 0, 29
-  |.endif
-  |   lwz PC, SAVE_PC			// Get SAVE_PC.
-  |  stw TMP2, 0(sp)
-  |  stw L, SAVE_L			// Set SAVE_L (on-trace resume/yield).
-  |  b >1
-  |.endif
+  |  NYI
   |->vm_exit_interp:
-  |.if JIT
-  |  // CARG1 = MULTRES or negated error code, BASE, PC and JGL set.
-  |  lwz L, SAVE_L
-  |  addi DISPATCH, JGL, -GG_DISP2G-32768
-  |  stp BASE, L->base
-  |1:
-  |  cmpwi CARG1, 0
-  |  blt >9				// Check for error from exit.
-  |  lwz LFUNC:RB, FRAME_FUNC(BASE)
-  |   slwi MULTRES, CARG1, 3
-  |    li TMP2, 0
-  |   stw MULTRES, SAVE_MULTRES
-  |  lwz TMP1, LFUNC:RB->pc
-  |    stw TMP2, DISPATCH_GL(jit_base)(DISPATCH)
-  |  lwz KBASE, PC2PROTO(k)(TMP1)
-  |  // Setup type comparison constants.
-  |  li TISNUM, LJ_TISNUM
-  |  lus TMP3, 0x59c0			// TOBIT = 2^52 + 2^51 (float).
-  |  stw TMP3, TMPD
-  |  li ZERO, 0
-  |  ori TMP3, TMP3, 0x0004		// TONUM = 2^52 + 2^51 + 2^31 (float).
-  |  lfs TOBIT, TMPD
-  |  stw TMP3, TMPD
-  |  lus TMP0, 0x4338			// Hiword of 2^52 + 2^51 (double)
-  |    li TISNIL, LJ_TNIL
-  |  stw TMP0, TONUM_HI
-  |  lfs TONUM, TMPD
-  |  // Modified copy of ins_next which handles function header dispatch, too.
-  |  lwz INS, 0(PC)
-  |   addi PC, PC, 4
-  |    // Assumes TISNIL == ~LJ_VMST_INTERP == -1.
-  |    stw TISNIL, DISPATCH_GL(vmstate)(DISPATCH)
-  |  decode_OPP TMP1, INS
-  |   decode_RA8 RA, INS
-  |  lpx TMP0, DISPATCH, TMP1
-  |  mtctr TMP0
-  |  cmplwi TMP1, BC_FUNCF*4		// Function header?
-  |  bge >2
-  |   decode_RB8 RB, INS
-  |   decode_RD8 RD, INS
-  |   decode_RC8 RC, INS
-  |  bctr
-  |2:
-  |  cmplwi TMP1, (BC_FUNCC+2)*4	// Fast function?
-  |  blt >3
-  |  // Check frame below fast function.
-  |  lwz TMP1, FRAME_PC(BASE)
-  |  andix. TMP0, TMP1, FRAME_TYPE
-  |  bney >3				// Trace stitching continuation?
-  |  // Otherwise set KBASE for Lua function below fast function.
-  |  lwz TMP2, -4(TMP1)
-  |  decode_RA8 TMP0, TMP2
-  |  sub TMP1, BASE, TMP0
-  |  lwz LFUNC:TMP2, -12(TMP1)
-  |  lwz TMP1, LFUNC:TMP2->pc
-  |  lwz KBASE, PC2PROTO(k)(TMP1)
-  |3:
-  |   subi RC, MULTRES, 8
-  |   add RA, RA, BASE
-  |  bctr
-  |
-  |9:  // Rethrow error from the right C frame.
-  |  neg CARG2, CARG1
-  |  mr CARG1, L
-  |  bl extern lj_err_throw		// (lua_State *L, int errcode)
-  |.endif
+  |  NYI
   |
   |//-----------------------------------------------------------------------
   |//-- Math helper functions ----------------------------------------------
@@ -2722,25 +2232,21 @@ static void build_subroutines(BuildCtx *ctx)
   |// NYI: Use internal implementations of floor, ceil, trunc.
   |
   |->vm_modi:
-  |  divwo. TMP0, CARG1, CARG2
+  |  divdo. TMP0, CARG1, CARG2
   |  bso >1
-  |.if GPR64
   |   xor CARG3, CARG1, CARG2
-  |   cmpwi CARG3, 0
-  |.else
-  |   xor. CARG3, CARG1, CARG2
-  |.endif
-  |  mullw TMP0, TMP0, CARG2
+  |   cmpdi CARG3, 0
+  |  mulld TMP0, TMP0, CARG2
   |  sub CARG1, CARG1, TMP0
   |   bgelr
-  |  cmpwi CARG1, 0; beqlr
+  |  cmpdi CARG1, 0; beqlr
   |  add CARG1, CARG1, CARG2
   |  blr
   |1:
-  |  cmpwi CARG2, 0
+  |  cmpdi CARG2, 0
   |   li CARG1, 0
   |  beqlr
-  |  clrso TMP0			// Clear SO for -2147483648 % -1 and return 0.
+  |  mcrxr cr0			// Clear SO for -2147483648 % -1 and return 0.
   |  blr
   |
   |//-----------------------------------------------------------------------
@@ -2753,7 +2259,7 @@ static void build_subroutines(BuildCtx *ctx)
   |->vm_cachesync:
   |.if JIT or FFI
   |  // Compute start of first cache line and number of cache lines.
-  |  rlwinm CARG1, CARG1, 0, 0, 26
+  |  clrldi CARG1, CARG1, 17
   |  sub CARG2, CARG2, CARG1
   |  addi CARG2, CARG2, 31
   |  rlwinm. CARG2, CARG2, 27, 5, 31
@@ -2782,66 +2288,69 @@ static void build_subroutines(BuildCtx *ctx)
   |->vm_ffi_callback:
   |.if FFI
   |.type CTSTATE, CTState, PC
+  |  pic_code_setup vm_ffi_callback
   |  saveregs
-  |  lwz CTSTATE, GL:r12->ctype_state
+  |  ld CTSTATE, GL:r12->ctype_state
   |   addi DISPATCH, r12, GG_G2DISP
-  |  stw r11, CTSTATE->cb.slot
-  |  stw r3, CTSTATE->cb.gpr[0]
+  |  std r11, CTSTATE->cb.slot
+  |  std r3, CTSTATE->cb.gpr[0]
   |   stfd f1, CTSTATE->cb.fpr[0]
-  |  stw r4, CTSTATE->cb.gpr[1]
+  |  std r4, CTSTATE->cb.gpr[1]
   |   stfd f2, CTSTATE->cb.fpr[1]
-  |  stw r5, CTSTATE->cb.gpr[2]
+  |  std r5, CTSTATE->cb.gpr[2]
   |   stfd f3, CTSTATE->cb.fpr[2]
-  |  stw r6, CTSTATE->cb.gpr[3]
+  |  std r6, CTSTATE->cb.gpr[3]
   |   stfd f4, CTSTATE->cb.fpr[3]
-  |  stw r7, CTSTATE->cb.gpr[4]
+  |  std r7, CTSTATE->cb.gpr[4]
   |   stfd f5, CTSTATE->cb.fpr[4]
-  |  stw r8, CTSTATE->cb.gpr[5]
+  |  std r8, CTSTATE->cb.gpr[5]
   |   stfd f6, CTSTATE->cb.fpr[5]
-  |  stw r9, CTSTATE->cb.gpr[6]
+  |  std r9, CTSTATE->cb.gpr[6]
   |   stfd f7, CTSTATE->cb.fpr[6]
-  |  stw r10, CTSTATE->cb.gpr[7]
+  |  std r10, CTSTATE->cb.gpr[7]
   |   stfd f8, CTSTATE->cb.fpr[7]
   |  addi TMP0, sp, CFRAME_SPACE+8
-  |  stw TMP0, CTSTATE->cb.stack
+  |  std TMP0, CTSTATE->cb.stack
   |   mr CARG1, CTSTATE
-  |  stw CTSTATE, SAVE_PC		// Any value outside of bytecode is ok.
+  |  std CTSTATE, SAVE_PC		// Any value outside of bytecode is ok.
   |   mr CARG2, sp
   |  bl extern lj_ccallback_enter	// (CTState *cts, void *cf)
   |  // Returns lua_State *.
-  |  lp BASE, L:CRET1->base
+  |  ld BASE, L:CRET1->base
   |     li TISNUM, LJ_TISNUM		// Setup type comparison constants.
-  |  lp RC, L:CRET1->top
+  |     set_oper_type TISNUM, TISNUM
+  |  ld RC, L:CRET1->top
   |     lus TMP3, 0x59c0		// TOBIT = 2^52 + 2^51 (float).
   |     li ZERO, 0
   |   mr L, CRET1
-  |     stw TMP3, TMPD
+  |     std TMP3, TMPD
   |     lus TMP0, 0x4338		// Hiword of 2^52 + 2^51 (double)
-  |  lwz LFUNC:RB, FRAME_FUNC(BASE)
+  |  ld LFUNC:RB, FRAME_FUNC(BASE)
   |     ori TMP3, TMP3, 0x0004		// TONUM = 2^52 + 2^51 + 2^31 (float).
   |     stw TMP0, TONUM_HI
   |     li TISNIL, LJ_TNIL
   |    li_vmstate INTERP
   |     lfs TOBIT, TMPD
-  |     stw TMP3, TMPD
+  |     std TMP3, TMPD
   |  sub RC, RC, BASE
   |    st_vmstate
   |     lfs TONUM, TMPD
+  |  clear_field RB
   |  ins_callt
   |.endif
   |
   |->cont_ffi_callback:			// Return from FFI callback.
   |.if FFI
-  |  lwz CTSTATE, DISPATCH_GL(ctype_state)(DISPATCH)
-  |   stp BASE, L->base
-  |   stp RB, L->top
-  |  stp L, CTSTATE->L
+  |  ld CTSTATE, DISPATCH_GL(ctype_state)(DISPATCH)
+  |   std BASE, L->base
+  |   std RB, L->top
+  |  std L, CTSTATE->L
   |  mr CARG1, CTSTATE
   |  mr CARG2, RA
   |  bl extern lj_ccallback_leave	// (CTState *cts, TValue *o)
-  |  lwz CRET1, CTSTATE->cb.gpr[0]
+  |  ld CRET1, CTSTATE->cb.gpr[0]
   |  lfd FARG1, CTSTATE->cb.fpr[0]
-  |  lwz CRET2, CTSTATE->cb.gpr[1]
+  |  ld CRET2, CTSTATE->cb.gpr[1]
   |  b ->vm_leave_unw
   |.endif
   |
@@ -2854,23 +2363,24 @@ static void build_subroutines(BuildCtx *ctx)
   |   lbz CARG2, CCSTATE->nsp
   |   lbz CARG3, CCSTATE->nfpr
   |  neg TMP1, TMP1
-  |    stw TMP0, 4(sp)
-  |   cmpwi cr1, CARG3, 0
+  |    std TMP0, 16(sp)
+  |   cmpdi cr1, CARG3, 0
+  |   std TOCREG, 24(sp)
   |  mr TMP2, sp
   |   addic. CARG2, CARG2, -1
-  |  stwux sp, sp, TMP1
+  |  stdux sp, sp, TMP1
   |   crnot 4*cr1+eq, 4*cr1+eq		// For vararg calls.
-  |  stw r14, -4(TMP2)
-  |  stw CCSTATE, -8(TMP2)
+  |  std r14, -8(TMP2)
+  |  std CCSTATE, -16(TMP2)
   |  mr r14, TMP2
   |  la TMP1, CCSTATE->stack
-  |   slwi CARG2, CARG2, 2
+  |   sldi CARG2, CARG2, 3
   |   blty >2
-  |  la TMP2, 8(sp)
-  |1:
-  |  lwzx TMP0, TMP1, CARG2
-  |  stwx TMP0, TMP2, CARG2
-  |   addic. CARG2, CARG2, -4
+  |  la TMP2, 96(sp)			// stack params after regs
+  |1:  // Copy stack slots
+  |  ldx TMP0, TMP1, CARG2
+  |  stdx TMP0, TMP2, CARG2
+  |   addic. CARG2, CARG2, -8
   |  bge <1
   |2:
   |  bney cr1, >3
@@ -2883,27 +2393,28 @@ static void build_subroutines(BuildCtx *ctx)
   |  lfd f7, CCSTATE->fpr[6]
   |  lfd f8, CCSTATE->fpr[7]
   |3:
-  |   lp TMP0, CCSTATE->func
-  |  lwz CARG2, CCSTATE->gpr[1]
-  |  lwz CARG3, CCSTATE->gpr[2]
-  |  lwz CARG4, CCSTATE->gpr[3]
-  |  lwz CARG5, CCSTATE->gpr[4]
-  |   mtctr TMP0
-  |  lwz r8, CCSTATE->gpr[5]
-  |  lwz r9, CCSTATE->gpr[6]
-  |  lwz r10, CCSTATE->gpr[7]
-  |  lwz CARG1, CCSTATE->gpr[0]		// Do this last, since CCSTATE is CARG1.
+  |  ld r12, CCSTATE->func
+  |  ld CARG2, CCSTATE->gpr[1]
+  |  ld CARG3, CCSTATE->gpr[2]
+  |  ld CARG4, CCSTATE->gpr[3]
+  |  ld CARG5, CCSTATE->gpr[4]
+  |   mtctr r12
+  |  ld r8, CCSTATE->gpr[5]
+  |  ld r9, CCSTATE->gpr[6]
+  |  ld r10, CCSTATE->gpr[7]
+  |  ld CARG1, CCSTATE->gpr[0]		// Do this last, since CCSTATE is CARG1.
   |   bctrl
-  |  lwz CCSTATE:TMP1, -8(r14)
-  |  lwz TMP2, -4(r14)
-  |   lwz TMP0, 4(r14)
-  |  stw CARG1, CCSTATE:TMP1->gpr[0]
+  |  ld CCSTATE:TMP1, -16(r14)
+  |  ld TMP2, -8(r14)
+  |   ld TMP0, 16(r14)
+  |   ld TOCREG, 24(r14)
+  |  std CARG1, CCSTATE:TMP1->gpr[0]
   |  stfd FARG1, CCSTATE:TMP1->fpr[0]
-  |  stw CARG2, CCSTATE:TMP1->gpr[1]
+  |  std CARG2, CCSTATE:TMP1->gpr[1]
   |   mtlr TMP0
-  |  stw CARG3, CCSTATE:TMP1->gpr[2]
+  |  std CARG3, CCSTATE:TMP1->gpr[2]
   |   mr sp, r14
-  |  stw CARG4, CCSTATE:TMP1->gpr[3]
+  |  std CARG4, CCSTATE:TMP1->gpr[3]
   |   mr r14, TMP2
   |  blr
   |.endif
@@ -2926,20 +2437,19 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
 
   case BC_ISLT: case BC_ISGE: case BC_ISLE: case BC_ISGT:
     |  // RA = src1*8, RD = src2*8, JMP with RD = target
-    |.if DUALNUM
-    |  lwzux TMP0, RA, BASE
+    |  ldux CARG2, RA, BASE
     |    addi PC, PC, 4
-    |   lwz CARG2, 4(RA)
-    |  lwzux TMP1, RD, BASE
+    |     get_oper_type TMP0, CARG2
+    |  ldux CARG3, RD, BASE
     |    lwz TMP2, -4(PC)
-    |  checknum cr0, TMP0
-    |   lwz CARG3, 4(RD)
+    |  checknum cr0, CARG2
     |    decode_RD4 TMP2, TMP2
-    |  checknum cr1, TMP1
+    |    get_oper_type TMP1, CARG3
+    |  checknum cr1, CARG3
     |    addis TMP2, TMP2, -(BCBIAS_J*4 >> 16)
     |  bne cr0, >7
     |  bne cr1, >8
-    |   cmpw CARG2, CARG3
+    |   cmpd CARG2, CARG3
     if (op == BC_ISLT) {
       |  bge >2
     } else if (op == BC_ISGE) {
@@ -2984,50 +2494,21 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
       |  blt <2
     }
     |  b <1
-    |.else
-    |  lwzx TMP0, BASE, RA
-    |    addi PC, PC, 4
-    |   lfdx f0, BASE, RA
-    |  lwzx TMP1, BASE, RD
-    |  checknum cr0, TMP0
-    |    lwz TMP2, -4(PC)
-    |   lfdx f1, BASE, RD
-    |  checknum cr1, TMP1
-    |    decode_RD4 TMP2, TMP2
-    |  bge cr0, ->vmeta_comp
-    |    addis TMP2, TMP2, -(BCBIAS_J*4 >> 16)
-    |  bge cr1, ->vmeta_comp
-    |  fcmpu cr0, f0, f1
-    if (op == BC_ISLT) {
-      |  bge >1
-    } else if (op == BC_ISGE) {
-      |  blt >1
-    } else if (op == BC_ISLE) {
-      |  cror 4*cr0+lt, 4*cr0+lt, 4*cr0+eq
-      |  bge >1
-    } else {
-      |  cror 4*cr0+lt, 4*cr0+lt, 4*cr0+eq
-      |  blt >1
-    }
-    |  add PC, PC, TMP2
-    |1:
-    |  ins_next
-    |.endif
     break;
 
   case BC_ISEQV: case BC_ISNEV:
     vk = op == BC_ISEQV;
     |  // RA = src1*8, RD = src2*8, JMP with RD = target
-    |.if DUALNUM
-    |  lwzux TMP0, RA, BASE
+    |  ldux CARG2, RA, BASE
     |    addi PC, PC, 4
-    |   lwz CARG2, 4(RA)
-    |  lwzux TMP1, RD, BASE
-    |  checknum cr0, TMP0
-    |    lwz TMP2, -4(PC)
-    |  checknum cr1, TMP1
+    |  get_oper_type TMP0, CARG2
+    |  ldux CARG3, RD, BASE
+    |  li TMP3, LJ_TISNUM
+    |  cmpld cr0, TMP0, TMP3
+    |    ld TMP2, -4(PC)
+    |  get_oper_type TMP1, CARG3
+    |  cmpld cr1, TMP1, TMP3
     |    decode_RD4 TMP2, TMP2
-    |   lwz CARG3, 4(RD)
     |  cror 4*cr7+gt, 4*cr0+gt, 4*cr1+gt
     |    addis TMP2, TMP2, -(BCBIAS_J*4 >> 16)
     if (vk) {
@@ -3035,50 +2516,22 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     } else {
       |  ble cr7, ->BC_ISNEN_Z
     }
-    |.else
-    |  lwzux TMP0, RA, BASE
-    |   lwz TMP2, 0(PC)
-    |    lfd f0, 0(RA)
-    |   addi PC, PC, 4
-    |  lwzux TMP1, RD, BASE
-    |  checknum cr0, TMP0
-    |   decode_RD4 TMP2, TMP2
-    |    lfd f1, 0(RD)
-    |  checknum cr1, TMP1
-    |   addis TMP2, TMP2, -(BCBIAS_J*4 >> 16)
-    |  bge cr0, >5
-    |  bge cr1, >5
-    |  fcmpu cr0, f0, f1
-    if (vk) {
-      |  bne >1
-      |  add PC, PC, TMP2
-    } else {
-      |  beq >1
-      |  add PC, PC, TMP2
-    }
-    |1:
-    |  ins_next
-    |.endif
     |5:  // Either or both types are not numbers.
-    |.if not DUALNUM
-    |    lwz CARG2, 4(RA)
-    |    lwz CARG3, 4(RD)
-    |.endif
     |.if FFI
-    |  cmpwi cr7, TMP0, LJ_TCDATA
-    |  cmpwi cr5, TMP1, LJ_TCDATA
+    |  cmpdi cr7, TMP0, LJ_TCDATA
+    |  cmpdi cr5, TMP1, LJ_TCDATA
     |.endif
     |   not TMP3, TMP0
-    |  cmplw TMP0, TMP1
-    |   cmplwi cr1, TMP3, ~LJ_TISPRI		// Primitive?
+    |  cmpld TMP0, TMP1
+    |   cmpldi cr1, TMP3, ~LJ_TISPRI		// Primitive?
     |.if FFI
     |  cror 4*cr7+eq, 4*cr7+eq, 4*cr5+eq
     |.endif
-    |   cmplwi cr6, TMP3, ~LJ_TISTABUD		// Table or userdata?
+    |   cmpldi cr6, TMP3, ~LJ_TISTABUD		// Table or userdata?
     |.if FFI
     |  beq cr7, ->vmeta_equal_cd
     |.endif
-    |    cmplw cr5, CARG2, CARG3
+    |    cmpld cr5, CARG2, CARG3
     |  crandc 4*cr0+gt, 4*cr0+eq, 4*cr1+gt	// 2: Same type and primitive.
     |  crorc 4*cr0+lt, 4*cr5+eq, 4*cr0+eq	// 1: Same tv or different type.
     |  crand 4*cr0+eq, 4*cr0+eq, 4*cr5+eq	// 0: Same type and same tv.
@@ -3094,24 +2547,21 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
       |  add PC, PC, TMP2
       |6:
     }
-    |.if DUALNUM
     |  bge cr0, >2			// Done if 1 or 2.
     |1:
     |  ins_next
     |2:
-    |.else
-    |  blt cr0, <1			// Done if 1 or 2.
-    |.endif
     |  blt cr6, <1			// Done if not tab/ud.
     |
     |  // Different tables or userdatas. Need to check __eq metamethod.
     |  // Field metatable must be at same offset for GCtab and GCudata!
-    |  lwz TAB:TMP2, TAB:CARG2->metatable
+    |  clear_field TAB:CARG2
+    |  ld TAB:TMP2, TAB:CARG2->metatable
     |   li CARG4, 1-vk			// ne = 0 or 1.
-    |  cmplwi TAB:TMP2, 0
+    |  cmpldi TAB:TMP2, 0
     |  beq <1				// No metatable?
     |  lbz TMP2, TAB:TMP2->nomm
-    |  andix. TMP2, TMP2, 1<<MM_eq
+    |  andi. TMP2, TMP2, 1<<MM_eq
     |  bne <1				// Or 'no __eq' flag set?
     |  mr PC, SAVE0			// Restore old PC.
     |  b ->vmeta_equal			// Handle __eq metamethod.
@@ -3120,17 +2570,16 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
   case BC_ISEQS: case BC_ISNES:
     vk = op == BC_ISEQS;
     |  // RA = src*8, RD = str_const*8 (~), JMP with RD = target
-    |  lwzux TMP0, RA, BASE
-    |   srwi RD, RD, 1
-    |  lwz STR:TMP3, 4(RA)
+    |  ldux TMP3, RA, BASE
+    |    get_oper_type TMP0,TMP3
+    |    clear_field TMP3
     |    lwz TMP2, 0(PC)
-    |   subfic RD, RD, -4
+    |   subfic RD, RD, -8
     |    addi PC, PC, 4
     |.if FFI
-    |  cmpwi TMP0, LJ_TCDATA
+    |  cmpdi TMP0, LJ_TCDATA
     |.endif
-    |   lwzx STR:TMP1, KBASE, RD	// KBASE-4-str_const*4
-    |  .gpr64 extsw TMP0, TMP0
+    |   ldx STR:TMP1, KBASE, RD		// KBASE-8-str_const*8
     |  subfic TMP0, TMP0, LJ_TSTR
     |.if FFI
     |  beq ->vmeta_equal_cd
@@ -3153,16 +2602,16 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
   case BC_ISEQN: case BC_ISNEN:
     vk = op == BC_ISEQN;
     |  // RA = src*8, RD = num_const*8, JMP with RD = target
-    |.if DUALNUM
-    |  lwzux TMP0, RA, BASE
+    |  ldux CARG2, RA, BASE
     |    addi PC, PC, 4
-    |   lwz CARG2, 4(RA)
-    |  lwzux TMP1, RD, KBASE
-    |  checknum cr0, TMP0
-    |    lwz TMP2, -4(PC)
-    |  checknum cr1, TMP1
+    |   get_oper_type TMP0, CARG2
+    |  ldux CARG3, RD, KBASE
+    |   li TMP4, LJ_TISNUM
+    |  get_value CARG2
+    |   cmpld cr0, TMP0, TMP4
+    |    ld TMP2, -4(PC)
+    |  checknum cr1, CARG3
     |    decode_RD4 TMP2, TMP2
-    |   lwz CARG3, 4(RD)
     |    addis TMP2, TMP2, -(BCBIAS_J*4 >> 16)
     if (vk) {
       |->BC_ISEQN_Z:
@@ -3173,23 +2622,6 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  bne cr1, >8
     |   cmpw CARG2, CARG3
     |4:
-    |.else
-    if (vk) {
-      |->BC_ISEQN_Z:  // Dummy label.
-    } else {
-      |->BC_ISNEN_Z:  // Dummy label.
-    }
-    |  lwzx TMP0, BASE, RA
-    |    addi PC, PC, 4
-    |   lfdx f0, BASE, RA
-    |    lwz TMP2, -4(PC)
-    |  lfdx f1, KBASE, RD
-    |    decode_RD4 TMP2, TMP2
-    |  checknum TMP0
-    |    addis TMP2, TMP2, -(BCBIAS_J*4 >> 16)
-    |  bge >3
-    |  fcmpu cr0, f0, f1
-    |.endif
     if (vk) {
       |  bne >1
       |  add PC, PC, TMP2
@@ -3209,11 +2641,10 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  ins_next
     |.if FFI
     |3:
-    |  cmpwi TMP0, LJ_TCDATA
+    |  cmpdi TMP0, LJ_TCDATA
     |  beq ->vmeta_equal_cd
     |  b <1
     |.endif
-    |.if DUALNUM
     |7:  // RA is not an integer.
     |  bge cr0, <3
     |  // RA is a number.
@@ -3230,26 +2661,26 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |2:
     |  fcmpu cr0, f0, f1
     |  b <4
-    |.endif
     break;
 
   case BC_ISEQP: case BC_ISNEP:
     vk = op == BC_ISEQP;
     |  // RA = src*8, RD = primitive_type*8 (~), JMP with RD = target
-    |  lwzx TMP0, BASE, RA
-    |   srwi TMP1, RD, 3
+    |  ldx TMP0, BASE, RA
+    |   srdi TMP1, RD, 3
     |    lwz TMP2, 0(PC)
+    |  get_oper_type TMP0, TMP0
     |   not TMP1, TMP1
     |    addi PC, PC, 4
     |.if FFI
-    |  cmpwi TMP0, LJ_TCDATA
+    |  cmpdi TMP0, LJ_TCDATA
     |.endif
     |  sub TMP0, TMP0, TMP1
     |.if FFI
     |  beq ->vmeta_equal_cd
     |.endif
     |    decode_RD4 TMP2, TMP2
-    |  .gpr64 extsw TMP0, TMP0
+    |   extsw TMP0, TMP0
     |  addic TMP0, TMP0, -1
     |    addis TMP2, TMP2, -(BCBIAS_J*4 >> 16)
     |  subfe TMP1, TMP1, TMP1
@@ -3266,11 +2697,11 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
 
   case BC_ISTC: case BC_ISFC: case BC_IST: case BC_ISF:
     |  // RA = dst*8 or unused, RD = src*8, JMP with RD = target
-    |  lwzx TMP0, BASE, RD
+    |  ldx TMP0, BASE, RD
     |   lwz INS, 0(PC)
     |   addi PC, PC, 4
     if (op == BC_IST || op == BC_ISF) {
-      |  .gpr64 extsw TMP0, TMP0
+      |  get_oper_type TMP0, TMP0
       |  subfic TMP0, TMP0, LJ_TTRUE
       |   decode_RD4 TMP2, INS
       |  subfe TMP1, TMP1, TMP1
@@ -3282,9 +2713,9 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
       }
       |  add PC, PC, TMP2
     } else {
-      |  li TMP1, LJ_TFALSE
+      |  set_bool TMP1, LJ_TFALSE
       |   lfdx f0, BASE, RD
-      |  cmplw TMP0, TMP1
+      |  cmpld TMP0, TMP1		// compare directly due to get_oper_type
       if (op == BC_ISTC) {
 	|  bge >1
       } else {
@@ -3301,21 +2732,18 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
 
   case BC_ISTYPE:
     |  // RA = src*8, RD = -type*8
-    |  lwzx TMP0, BASE, RA
-    |  srwi TMP1, RD, 3
+    |  ldx TMP0, BASE, RA
+    |  srdi TMP1, RD, 3
     |  ins_next1
-    |.if not PPE and not GPR64
-    |  add. TMP0, TMP0, TMP1
-    |.else
     |  neg TMP1, TMP1
-    |  cmpw TMP0, TMP1
-    |.endif
+    |  get_oper_type TMP0, TMP0		// TMP1 is not shifted
+    |  cmpd TMP0, TMP1
     |  bne ->vmeta_istype
     |  ins_next2
     break;
   case BC_ISNUM:
     |  // RA = src*8, RD = -(TISNUM-1)*8
-    |  lwzx TMP0, BASE, RA
+    |  ldx TMP0, BASE, RA
     |  ins_next1
     |  checknum TMP0
     |  bge ->vmeta_istype
@@ -3334,79 +2762,60 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
   case BC_NOT:
     |  // RA = dst*8, RD = src*8
     |  ins_next1
-    |  lwzx TMP0, BASE, RD
-    |  .gpr64 extsw TMP0, TMP0
+    |  ldx TMP0, BASE, RD
+    |  rotldi TMP0, TMP0, 17
     |  subfic TMP1, TMP0, LJ_TTRUE
     |  adde TMP0, TMP0, TMP1
-    |  stwx TMP0, BASE, RA
+    |  rotldi TMP0, TMP0, 47
+    |  stdx TMP0, BASE, RA
     |  ins_next2
     break;
   case BC_UNM:
     |  // RA = dst*8, RD = src*8
-    |  lwzux TMP1, RD, BASE
-    |   lwz TMP0, 4(RD)
-    |  checknum TMP1
-    |.if DUALNUM
-    |  bne >5
-    |.if GPR64
+    |  ldux TMP0, RD, BASE		// RD is Used in vmeta_unm
+    |  mr TMP1, TMP0
     |  lus TMP2, 0x8000
-    |  neg TMP0, TMP0
-    |  cmplw TMP0, TMP2
+    |  checknum TMP1
+    |  bne >5
+    |  neg TMP1, TMP1
+    |  cmplw TMP1, TMP2
     |  beq >4
-    |.else
-    |  nego. TMP0, TMP0
-    |  bso >4
     |1:
-    |.endif
     |  ins_next1
-    |  stwux TISNUM, RA, BASE
-    |   stw TMP0, 4(RA)
+    |  rldicl TMP0, TMP1, 0, 32		// clear the high order 32 bits
+    |  add TMP0, TMP0, TISNUM
+    |  stdx TMP0, RA, BASE
     |3:
     |  ins_next2
     |4:
-    |.if not GPR64
-    |  // Potential overflow.
-    |  checkov TMP1, <1			// Ignore unrelated overflow.
-    |.endif
-    |  lus TMP1, 0x41e0			// 2^31.
-    |  li TMP0, 0
+    |  li TMP0, 0x41e0			// 2^31.
+    |  sldi TMP0, TMP0, 48
     |  b >7
-    |.endif
     |5:
+    |  sldi TMP2, TMP2, 32
     |  bge ->vmeta_unm
-    |  xoris TMP1, TMP1, 0x8000
+    |  xor TMP0, TMP0, TMP2
     |7:
     |  ins_next1
-    |  stwux TMP1, RA, BASE
-    |   stw TMP0, 4(RA)
-    |.if DUALNUM
+    |  stdx TMP0, RA, BASE
     |  b <3
-    |.else
-    |  ins_next2
-    |.endif
     break;
   case BC_LEN:
     |  // RA = dst*8, RD = src*8
-    |  lwzux TMP0, RD, BASE
-    |   lwz CARG1, 4(RD)
-    |  checkstr TMP0; bne >2
+    |  ldux CARG1, RD, BASE
+    |  mr TMP0, CARG1
+    |  checkstr CARG1; bne >2
     |  lwz CRET1, STR:CARG1->len
     |1:
-    |.if DUALNUM
     |  ins_next1
-    |  stwux TISNUM, RA, BASE
-    |   stw CRET1, 4(RA)
-    |.else
-    |  tonum_u f0, CRET1		// Result is a non-negative integer.
-    |  ins_next1
-    |  stfdx f0, BASE, RA
-    |.endif
+    |  add CRET1, CRET1, TISNUM
+    |  stdux CRET1, RA, BASE
     |  ins_next2
     |2:
     |  checktab TMP0; bne ->vmeta_len
 #if LJ_52
-    |  lwz TAB:TMP2, TAB:CARG1->metatable
-    |  cmplwi TAB:TMP2, 0
+    |  ld TAB:TMP2, TAB:CARG1->metatable
+    |  cmpldi TAB:TMP2, 0
     |  bne >9
     |3:
 #endif
@@ -3417,7 +2826,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
 #if LJ_52
     |9:
     |  lbz TMP0, TAB:TMP2->nomm
-    |  andix. TMP0, TMP0, 1<<MM_len
+    |  andi. TMP0, TMP0, 1<<MM_len
     |  bne <3				// 'no __len' flag set: done.
     |  b ->vmeta_len
 #endif
@@ -3430,40 +2839,28 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     ||vk = ((int)op - BC_ADDVN) / (BC_ADDNV-BC_ADDVN);
     ||switch (vk) {
     ||case 0:
-    |   lwzx TMP1, BASE, RB
-    |   .if DUALNUM
-    |     lwzx TMP2, KBASE, RC
-    |   .endif
+    |   ldx TMP1, BASE, RB
+    |     ldx TMP2, KBASE, RC
     |    lfdx f14, BASE, RB
     |    lfdx f15, KBASE, RC
-    |   .if DUALNUM
     |     checknum cr0, TMP1
     |     checknum cr1, TMP2
     |     crand 4*cr0+lt, 4*cr0+lt, 4*cr1+lt
     |     bge ->vmeta_arith_vn
-    |   .else
-    |     checknum TMP1; bge ->vmeta_arith_vn
-    |   .endif
     ||  break;
     ||case 1:
-    |   lwzx TMP1, BASE, RB
-    |   .if DUALNUM
-    |     lwzx TMP2, KBASE, RC
-    |   .endif
+    |   ldx TMP1, BASE, RB
+    |     ldx TMP2, KBASE, RC
     |    lfdx f15, BASE, RB
     |    lfdx f14, KBASE, RC
-    |   .if DUALNUM
     |     checknum cr0, TMP1
     |     checknum cr1, TMP2
     |     crand 4*cr0+lt, 4*cr0+lt, 4*cr1+lt
     |     bge ->vmeta_arith_nv
-    |   .else
-    |     checknum TMP1; bge ->vmeta_arith_nv
-    |   .endif
     ||  break;
     ||default:
-    |   lwzx TMP1, BASE, RB
-    |   lwzx TMP2, BASE, RC
+    |   ldx TMP1, BASE, RB
+    |   ldx TMP2, BASE, RC
     |    lfdx f14, BASE, RB
     |    lfdx f15, BASE, RC
     |   checknum cr0, TMP1
@@ -3518,40 +2915,37 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     ||vk = ((int)op - BC_ADDVN) / (BC_ADDNV-BC_ADDVN);
     ||switch (vk) {
     ||case 0:
-    |   lwzux TMP1, RB, BASE
-    |   lwzux TMP2, RC, KBASE
-    |    lwz CARG1, 4(RB)
-    |   checknum cr0, TMP1
-    |    lwz CARG2, 4(RC)
+    |   ldux CARG1, RB, BASE
+    |   ldux CARG2, RC, KBASE
+    |   checknum cr0, CARG1
     ||  break;
     ||case 1:
-    |   lwzux TMP1, RB, BASE
-    |   lwzux TMP2, RC, KBASE
-    |    lwz CARG2, 4(RB)
-    |   checknum cr0, TMP1
-    |    lwz CARG1, 4(RC)
+    |   ldux CARG1, RC, KBASE
+    |   ldux CARG2, RB, BASE
+    |   checknum cr0, CARG1
     ||  break;
     ||default:
-    |   lwzux TMP1, RB, BASE
-    |   lwzux TMP2, RC, BASE
-    |    lwz CARG1, 4(RB)
-    |   checknum cr0, TMP1
-    |    lwz CARG2, 4(RC)
+    |   ldux CARG1, RB, BASE
+    |   ldux CARG2, RC, BASE
+    |   checknum cr0, CARG1
     ||  break;
     ||}
-    |  checknum cr1, TMP2
+    |  checknum cr1, CARG2
     |  bne >5
     |  bne cr1, >5
     |  intins CARG1, CARG1, CARG2
     |  bso >4
     |1:
     |  ins_next1
-    |  stwux TISNUM, RA, BASE
-    |  stw CARG1, 4(RA)
+    |  li TISNUM, LJ_TISNUM
+    |  set_oper_type TISNUM, TISNUM
+    |  clear_field CARG1
+    |  add CARG1, CARG1, TISNUM
+    |  stdux CARG1, RA, BASE
     |2:
     |  ins_next2
     |4:  // Overflow.
-    |  checkov TMP0, <1			// Ignore unrelated overflow.
+    |  checkov <1			// Ignore unrelated overflow.
     |  ins_arithfallback b
     |5:  // FP variant.
     ||if (vk == 1) {
@@ -3575,15 +2969,10 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |.endmacro
     |
     |.macro ins_arith, intins, fpins
-    |.if DUALNUM
     |  ins_arithdn intins, fpins
-    |.else
-    |  ins_arithfp fpins
-    |.endif
     |.endmacro
 
   case BC_ADDVN: case BC_ADDNV: case BC_ADDVV:
-    |.if GPR64
     |.macro addo32., y, a, b
     |  // Need to check overflow for (a<<32) + (b<<32).
     |  rldicr TMP0, a, 32, 31
@@ -3592,12 +2981,8 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  add y, a, b
     |.endmacro
     |  ins_arith addo32., fadd
-    |.else
-    |  ins_arith addo., fadd
-    |.endif
     break;
   case BC_SUBVN: case BC_SUBNV: case BC_SUBVV:
-    |.if GPR64
     |.macro subo32., y, a, b
     |  // Need to check overflow for (a<<32) - (b<<32).
     |  rldicr TMP0, a, 32, 31
@@ -3606,9 +2991,6 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  sub y, a, b
     |.endmacro
     |  ins_arith subo32., fsub
-    |.else
-    |  ins_arith subo., fsub
-    |.endif
     break;
   case BC_MULVN: case BC_MULNV: case BC_MULVV:
     |  ins_arith mullwo., fmul
@@ -3624,9 +3006,9 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     break;
   case BC_POW:
     |  // NYI: (partial) integer arithmetic.
-    |  lwzx TMP1, BASE, RB
+    |  ldx TMP1, BASE, RB
     |   lfdx FARG1, BASE, RB
-    |  lwzx TMP2, BASE, RC
+    |  ldx TMP2, BASE, RC
     |   lfdx FARG2, BASE, RC
     |  checknum cr0, TMP1
     |  checknum cr1, TMP2
@@ -3641,79 +3023,58 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
   case BC_CAT:
     |  // RA = dst*8, RB = src_start*8, RC = src_end*8
     |  sub CARG3, RC, RB
-    |   stp BASE, L->base
+    |   std BASE, L->base
     |  add CARG2, BASE, RC
     |  mr SAVE0, RB
     |->BC_CAT_Z:
-    |   stw PC, SAVE_PC
+    |   std PC, SAVE_PC
     |  mr CARG1, L
-    |  srwi CARG3, CARG3, 3
+    |  srdi CARG3, CARG3, 3
     |  bl extern lj_meta_cat		// (lua_State *L, TValue *top, int left)
     |  // Returns NULL (finished) or TValue * (metamethod).
-    |  cmplwi CRET1, 0
-    |   lp BASE, L->base
+    |  cmpldi CRET1, 0
+    |   ld BASE, L->base
     |  bne ->vmeta_binop
     |  ins_next1
     |  lfdx f0, BASE, SAVE0		// Copy result from RB to RA.
     |  stfdx f0, BASE, RA
     |  ins_next2
     break;
-
   /* -- Constant ops ------------------------------------------------------ */
 
   case BC_KSTR:
     |  // RA = dst*8, RD = str_const*8 (~)
-    |  srwi TMP1, RD, 1
-    |  subfic TMP1, TMP1, -4
+    |  subfic TMP1, RD, -8
     |  ins_next1
-    |  lwzx TMP0, KBASE, TMP1		// KBASE-4-str_const*4
+    |  ldx TMP0, KBASE, TMP1		// KBASE-8-str_const*8
     |  li TMP2, LJ_TSTR
-    |  stwux TMP2, RA, BASE
-    |  stw TMP0, 4(RA)
+    |  set_oper_type TMP2, TMP2
+    |  add TMP0, TMP2, TMP0
+    |  stdx TMP0, RA, BASE
     |  ins_next2
     break;
   case BC_KCDATA:
     |.if FFI
     |  // RA = dst*8, RD = cdata_const*8 (~)
-    |  srwi TMP1, RD, 1
-    |  subfic TMP1, TMP1, -4
+    |  subfic TMP1, RD, -8
     |  ins_next1
-    |  lwzx TMP0, KBASE, TMP1		// KBASE-4-cdata_const*4
+    |  ldx TMP0, KBASE, TMP1		// KBASE-8-cdata_const*8
     |  li TMP2, LJ_TCDATA
-    |  stwux TMP2, RA, BASE
-    |  stw TMP0, 4(RA)
+    |  set_oper_type TMP2, TMP2
+    |  add TMP2, TMP2, TMP0
+    |  stdx TMP2, RA, BASE
     |  ins_next2
     |.endif
     break;
   case BC_KSHORT:
     |  // RA = dst*8, RD = int16_literal*8
-    |.if DUALNUM
-    |  slwi RD, RD, 13
-    |  srawi RD, RD, 16
+    |  srdi RD, RD, 3
+    |  extsh RD, RD			// extend sign for negative numbers
+    |  clear_field RD
     |  ins_next1
-    |   stwux TISNUM, RA, BASE
-    |   stw RD, 4(RA)
+    |   add TMP0, RD, TISNUM
+    |   stdx TMP0, RA, BASE
     |  ins_next2
-    |.else
-    |  // The soft-float approach is faster.
-    |  slwi RD, RD, 13
-    |  srawi TMP1, RD, 31
-    |  xor TMP2, TMP1, RD
-    |  sub TMP2, TMP2, TMP1		// TMP2 = abs(x)
-    |  cntlzw TMP3, TMP2
-    |  subfic TMP1, TMP3, 0x40d		// TMP1 = exponent-1
-    |   slw TMP2, TMP2, TMP3		// TMP2 = left aligned mantissa
-    |    subfic TMP3, RD, 0
-    |  slwi TMP1, TMP1, 20
-    |   rlwimi RD, TMP2, 21, 1, 31	// hi = sign(x) | (mantissa>>11)
-    |    subfe TMP0, TMP0, TMP0
-    |   add RD, RD, TMP1		// hi = hi + exponent-1
-    |    and RD, RD, TMP0		// hi = x == 0 ? 0 : hi
-    |  ins_next1
-    |    stwux RD, RA, BASE
-    |    stw ZERO, 4(RA)
-    |  ins_next2
-    |.endif
     break;
   case BC_KNUM:
     |  // RA = dst*8, RD = num_const*8
@@ -3724,19 +3085,20 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     break;
   case BC_KPRI:
     |  // RA = dst*8, RD = primitive_type*8 (~)
-    |  srwi TMP1, RD, 3
+    |  srdi TMP1, RD, 3
+    |  set_oper_type TMP1,TMP1
     |  not TMP0, TMP1
     |  ins_next1
-    |  stwx TMP0, BASE, RA
+    |  stdx TMP0, BASE, RA
     |  ins_next2
     break;
   case BC_KNIL:
     |  // RA = base*8, RD = end*8
-    |  stwx TISNIL, BASE, RA
+    |  stdx TISNIL, BASE, RA
     |   addi RA, RA, 8
     |1:
-    |  stwx TISNIL, BASE, RA
-    |  cmpw RA, RD
+    |  stdx TISNIL, BASE, RA
+    |  cmpd RA, RD
     |   addi RA, RA, 8
     |  blt <1
     |  ins_next_
@@ -3746,31 +3108,31 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
 
   case BC_UGET:
     |  // RA = dst*8, RD = uvnum*8
-    |  lwz LFUNC:RB, FRAME_FUNC(BASE)
-    |   srwi RD, RD, 1
+    |  ld LFUNC:RB, FRAME_FUNC(BASE)
     |   addi RD, RD, offsetof(GCfuncL, uvptr)
-    |  lwzx UPVAL:RB, LFUNC:RB, RD
+    |  clear_field RB
+    |  ldx UPVAL:RB, LFUNC:RB, RD
     |  ins_next1
-    |  lwz TMP1, UPVAL:RB->v
-    |  lfd f0, 0(TMP1)
-    |  stfdx f0, BASE, RA
+    |  ld TMP1, UPVAL:RB->v
+    |  ld TMP1, 0(TMP1)
+    |  stdx TMP1, BASE, RA
     |  ins_next2
     break;
   case BC_USETV:
     |  // RA = uvnum*8, RD = src*8
-    |  lwz LFUNC:RB, FRAME_FUNC(BASE)
-    |    srwi RA, RA, 1
+    |  ld LFUNC:RB, FRAME_FUNC(BASE)
     |    addi RA, RA, offsetof(GCfuncL, uvptr)
     |   lfdux f0, RD, BASE
-    |  lwzx UPVAL:RB, LFUNC:RB, RA
+    |  clear_field RB
+    |  ldx UPVAL:RB, LFUNC:RB, RA
     |  lbz TMP3, UPVAL:RB->marked
-    |   lwz CARG2, UPVAL:RB->v
-    |  andix. TMP3, TMP3, LJ_GC_BLACK	// isblack(uv)
+    |   ld CARG2, UPVAL:RB->v
+    |  andi. TMP3, TMP3, LJ_GC_BLACK	// isblack(uv)
     |    lbz TMP0, UPVAL:RB->closed
-    |   lwz TMP2, 0(RD)
+    |   ld TMP1, 0(RD)
+    |   get_oper_type TMP2, TMP1
     |   stfd f0, 0(CARG2)
-    |    cmplwi cr1, TMP0, 0
-    |   lwz TMP1, 4(RD)
+    |    cmpldi cr1, TMP0, 0
     |  cror 4*cr0+eq, 4*cr0+eq, 4*cr1+eq
     |   subi TMP2, TMP2, (LJ_TNUMX+1)
     |  bne >2				// Upvalue is closed and black?
@@ -3778,10 +3140,11 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  ins_next
     |
     |2:  // Check if new value is collectable.
-    |  cmplwi TMP2, LJ_TISGCV - (LJ_TNUMX+1)
+    |  cmpldi TMP2, LJ_TISGCV - (LJ_TNUMX+1)
     |  bge <1				// tvisgcv(v)
+    |  clear_field GCOBJ:TMP1
     |  lbz TMP3, GCOBJ:TMP1->gch.marked
-    |  andix. TMP3, TMP3, LJ_GC_WHITES	// iswhite(v)
+    |  andi. TMP3, TMP3, LJ_GC_WHITES	// iswhite(v)
     |   la CARG1, GG_DISP2G(DISPATCH)
     |  // Crossed a write barrier. Move the barrier forward.
     |  beq <1
@@ -3790,28 +3153,28 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     break;
   case BC_USETS:
     |  // RA = uvnum*8, RD = str_const*8 (~)
-    |  lwz LFUNC:RB, FRAME_FUNC(BASE)
-    |   srwi TMP1, RD, 1
-    |    srwi RA, RA, 1
-    |   subfic TMP1, TMP1, -4
+    |  ld LFUNC:RB, FRAME_FUNC(BASE)
+    |   subfic TMP1, RD, -8
     |    addi RA, RA, offsetof(GCfuncL, uvptr)
-    |   lwzx STR:TMP1, KBASE, TMP1	// KBASE-4-str_const*4
-    |  lwzx UPVAL:RB, LFUNC:RB, RA
+    |  clear_field RB
+    |   ldx STR:TMP1, KBASE, TMP1	// KBASE-8-str_const*8
+    |  ldx UPVAL:RB, LFUNC:RB, RA
     |  lbz TMP3, UPVAL:RB->marked
-    |   lwz CARG2, UPVAL:RB->v
-    |  andix. TMP3, TMP3, LJ_GC_BLACK	// isblack(uv)
+    |   ld CARG2, UPVAL:RB->v
+    |  andi. TMP3, TMP3, LJ_GC_BLACK	// isblack(uv)
     |   lbz TMP3, STR:TMP1->marked
     |   lbz TMP2, UPVAL:RB->closed
     |   li TMP0, LJ_TSTR
-    |   stw STR:TMP1, 4(CARG2)
-    |   stw TMP0, 0(CARG2)
+    |   set_oper_type TMP0, TMP0
+    |   add TMP0, TMP0, STR:TMP1
+    |   std TMP0, 0(CARG2)
     |  bne >2
     |1:
     |  ins_next
     |
     |2:  // Check if string is white and ensure upvalue is closed.
-    |  andix. TMP3, TMP3, LJ_GC_WHITES	// iswhite(str)
-    |   cmplwi cr1, TMP2, 0
+    |  andi. TMP3, TMP3, LJ_GC_WHITES	// iswhite(str)
+    |   cmpldi cr1, TMP2, 0
     |  cror 4*cr0+eq, 4*cr0+eq, 4*cr1+eq
     |   la CARG1, GG_DISP2G(DISPATCH)
     |  // Crossed a write barrier. Move the barrier forward.
@@ -3821,61 +3184,63 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     break;
   case BC_USETN:
     |  // RA = uvnum*8, RD = num_const*8
-    |  lwz LFUNC:RB, FRAME_FUNC(BASE)
-    |   srwi RA, RA, 1
+    |  ld LFUNC:RB, FRAME_FUNC(BASE)
     |   addi RA, RA, offsetof(GCfuncL, uvptr)
+    |  clear_field RB
     |    lfdx f0, KBASE, RD
-    |  lwzx UPVAL:RB, LFUNC:RB, RA
+    |  ldx UPVAL:RB, LFUNC:RB, RA
     |  ins_next1
-    |  lwz TMP1, UPVAL:RB->v
+    |  ld TMP1, UPVAL:RB->v
     |  stfd f0, 0(TMP1)
     |  ins_next2
     break;
   case BC_USETP:
     |  // RA = uvnum*8, RD = primitive_type*8 (~)
-    |  lwz LFUNC:RB, FRAME_FUNC(BASE)
-    |   srwi RA, RA, 1
-    |    srwi TMP0, RD, 3
+    |  ld LFUNC:RB, FRAME_FUNC(BASE)
+    |    srdi TMP0, RD, 3
     |   addi RA, RA, offsetof(GCfuncL, uvptr)
+    |    set_oper_type TMP0, TMP0
+    |  clear_field RB
     |    not TMP0, TMP0
-    |  lwzx UPVAL:RB, LFUNC:RB, RA
+    |  ldx UPVAL:RB, LFUNC:RB, RA
     |  ins_next1
-    |  lwz TMP1, UPVAL:RB->v
-    |  stw TMP0, 0(TMP1)
+    |  ld TMP1, UPVAL:RB->v
+    |  std TMP0, 0(TMP1)
     |  ins_next2
     break;
 
   case BC_UCLO:
     |  // RA = level*8, RD = target
-    |  lwz TMP1, L->openupval
+    |  ld TMP1, L->openupval
     |  branch_RD			// Do this first since RD is not saved.
-    |   stp BASE, L->base
-    |  cmplwi TMP1, 0
+    |   std BASE, L->base
+    |  cmpldi TMP1, 0
     |   mr CARG1, L
     |  beq >1
     |   add CARG2, BASE, RA
     |  bl extern lj_func_closeuv	// (lua_State *L, TValue *level)
-    |  lp BASE, L->base
+    |  ld BASE, L->base
     |1:
     |  ins_next
     break;
 
   case BC_FNEW:
     |  // RA = dst*8, RD = proto_const*8 (~) (holding function prototype)
-    |  srwi TMP1, RD, 1
-    |   stp BASE, L->base
-    |  subfic TMP1, TMP1, -4
-    |   stw PC, SAVE_PC
-    |  lwzx CARG2, KBASE, TMP1		// KBASE-4-tab_const*4
+    |   std BASE, L->base
+    |  subfic TMP1, RD, -8
+    |   std PC, SAVE_PC
+    |  ldx CARG2, KBASE, TMP1		// KBASE-8-tab_const*8
     |   mr CARG1, L
-    |  lwz CARG3, FRAME_FUNC(BASE)
+    |  ld CARG3, FRAME_FUNC(BASE)
+    |  clear_field CARG3
     |  // (lua_State *L, GCproto *pt, GCfuncL *parent)
     |  bl extern lj_func_newL_gc
     |  // Returns GCfuncL *.
-    |  lp BASE, L->base
+    |  ld BASE, L->base
     |   li TMP0, LJ_TFUNC
-    |  stwux TMP0, RA, BASE
-    |  stw LFUNC:CRET1, 4(RA)
+    |   set_oper_type TMP0, TMP0
+    |  add TMP0, TMP0, LFUNC:CRET1
+    |  stdx TMP0, RA, BASE
     |  ins_next
     break;
 
@@ -3884,32 +3249,32 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
   case BC_TNEW:
   case BC_TDUP:
     |  // RA = dst*8, RD = (hbits|asize)*8 | tab_const*8 (~)
-    |  lwz TMP0, DISPATCH_GL(gc.total)(DISPATCH)
+    |  ld TMP0, DISPATCH_GL(gc.total)(DISPATCH)
     |   mr CARG1, L
-    |  lwz TMP1, DISPATCH_GL(gc.threshold)(DISPATCH)
-    |   stp BASE, L->base
-    |  cmplw TMP0, TMP1
-    |   stw PC, SAVE_PC
+    |  ld TMP1, DISPATCH_GL(gc.threshold)(DISPATCH)
+    |   std BASE, L->base
+    |  cmpld TMP0, TMP1
+    |   std PC, SAVE_PC
     |  bge >5
     |1:
     if (op == BC_TNEW) {
       |  rlwinm CARG2, RD, 29, 21, 31
       |  rlwinm CARG3, RD, 18, 27, 31
-      |  cmpwi CARG2, 0x7ff; beq >3
+      |  cmpdi CARG2, 0x7ff; beq >3
       |2:
-      |  bl extern lj_tab_new  // (lua_State *L, int32_t asize, uint32_t hbits)
+      |  bl extern lj_tab_new	// (lua_State *L, int32_t asize, uint32_t hbits)
       |  // Returns Table *.
     } else {
-      |  srwi TMP1, RD, 1
-      |  subfic TMP1, TMP1, -4
-      |  lwzx CARG2, KBASE, TMP1		// KBASE-4-tab_const*4
-      |  bl extern lj_tab_dup  // (lua_State *L, Table *kt)
+      |  subfic TMP1, RD, -8
+      |  ldx CARG2, KBASE, TMP1		// KBASE-8-tab_const*8
+      |  bl extern lj_tab_dup	// (lua_State *L, Table *kt)
       |  // Returns Table *.
     }
-    |  lp BASE, L->base
+    |  ld BASE, L->base
     |   li TMP0, LJ_TTAB
-    |  stwux TMP0, RA, BASE
-    |  stw TAB:CRET1, 4(RA)
+    |   set_oper_type TMP0, TMP0
+    |   add TAB:CRET1, TMP0, TAB:CRET1
+    |  stdx TAB:CRET1, RA, BASE
     |  ins_next
     if (op == BC_TNEW) {
       |3:
@@ -3918,7 +3283,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     }
     |5:
     |  mr SAVE0, RD
-    |  bl extern lj_gc_step_fixtop  // (lua_State *L)
+    |  bl extern lj_gc_step_fixtop	// (lua_State *L)
     |  mr RD, SAVE0
     |  mr CARG1, L
     |  b <1
@@ -3928,11 +3293,11 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  // RA = dst*8, RD = str_const*8 (~)
   case BC_GSET:
     |  // RA = src*8, RD = str_const*8 (~)
-    |  lwz LFUNC:TMP2, FRAME_FUNC(BASE)
-    |   srwi TMP1, RD, 1
-    |  lwz TAB:RB, LFUNC:TMP2->env
-    |   subfic TMP1, TMP1, -4
-    |   lwzx STR:RC, KBASE, TMP1	// KBASE-4-str_const*4
+    |  ld LFUNC:TMP2, FRAME_FUNC(BASE)
+    |  clear_field LFUNC:TMP2
+    |  ld TAB:RB, LFUNC:TMP2->env
+    |   subfic TMP1, RD, -8
+    |   ldx STR:RC, KBASE, TMP1		// KBASE-8-str_const*8
     if (op == BC_GGET) {
       |  b ->BC_TGETS_Z
     } else {
@@ -3942,154 +3307,122 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
 
   case BC_TGETV:
     |  // RA = dst*8, RB = table*8, RC = key*8
-    |  lwzux CARG1, RB, BASE
-    |  lwzux CARG2, RC, BASE
-    |   lwz TAB:RB, 4(RB)
-    |.if DUALNUM
-    |   lwz RC, 4(RC)
-    |.else
-    |   lfd f0, 0(RC)
-    |.endif
+    |  ldux CARG1, RB, BASE
+    |  ldux CARG2, RC, BASE
     |  checktab CARG1
-    |   checknum cr1, CARG2
+    |   checknum_noclear cr1, CARG2
     |  bne ->vmeta_tgetv
-    |.if DUALNUM
-    |  lwz TMP0, TAB:RB->asize
+    |  lwz TMP0, TAB:CARG1->asize
     |   bne cr1, >5
-    |   lwz TMP1, TAB:RB->array
-    |  cmplw TMP0, RC
-    |   slwi TMP2, RC, 3
-    |.else
-    |   bge cr1, >5
-    |  // Convert number key to integer, check for integerness and range.
-    |  fctiwz f1, f0
-    |    fadd f2, f0, TOBIT
-    |  stfd f1, TMPD
-    |   lwz TMP0, TAB:RB->asize
-    |    fsub f2, f2, TOBIT
-    |  lwz TMP2, TMPD_LO
-    |   lwz TMP1, TAB:RB->array
-    |    fcmpu cr1, f0, f2
-    |  cmplw cr0, TMP0, TMP2
-    |  crand 4*cr0+gt, 4*cr0+gt, 4*cr1+eq
-    |   slwi TMP2, TMP2, 3
-    |.endif
+    |   get_value CARG2			// Number is cleared through get_value
+    |   ld TMP1, TAB:CARG1->array
+    |  cmpld TMP0, CARG2
+    |   sldi TMP2, CARG2, 3
     |  ble ->vmeta_tgetv		// Integer key and in array part?
-    |  lwzx TMP0, TMP1, TMP2
+    |  ldx TMP0, TMP1, TMP2
     |   lfdx f14, TMP1, TMP2
-    |  checknil TMP0; beq >2
+    |  checknil_noclear TMP0; beq >2
     |1:
     |  ins_next1
     |   stfdx f14, BASE, RA
     |  ins_next2
     |
     |2:  // Check for __index if table value is nil.
-    |  lwz TAB:TMP2, TAB:RB->metatable
-    |  cmplwi TAB:TMP2, 0
+    |  ld TAB:TMP2, TAB:CARG1->metatable
+    |  cmpldi TAB:TMP2, 0
     |  beq <1				// No metatable: done.
     |  lbz TMP0, TAB:TMP2->nomm
-    |  andix. TMP0, TMP0, 1<<MM_index
+    |  andi. TMP0, TMP0, 1<<MM_index
     |  bne <1				// 'no __index' flag set: done.
     |  b ->vmeta_tgetv
     |
     |5:
     |  checkstr CARG2; bne ->vmeta_tgetv
-    |.if not DUALNUM
-    |  lwz STR:RC, 4(RC)
-    |.endif
+    |  mr RC, CARG2			// BC_TGETS_Z needs plain RB and RC
+    |  mr RB, CARG1			// pointers without its type
     |  b ->BC_TGETS_Z			// String key?
     break;
   case BC_TGETS:
     |  // RA = dst*8, RB = table*8, RC = str_const*8 (~)
-    |  lwzux CARG1, RB, BASE
-    |   srwi TMP1, RC, 1
-    |    lwz TAB:RB, 4(RB)
-    |   subfic TMP1, TMP1, -4
+    |  ldux CARG1, RB, BASE
+    |    ld TAB:RB, 0(RB)
+    |    clear_field TAB:RB
+    |   subfic TMP1, RC, -8
     |  checktab CARG1
-    |   lwzx STR:RC, KBASE, TMP1	// KBASE-4-str_const*4
+    |   ldx STR:RC, KBASE, TMP1		// KBASE-8-str_const*8
     |  bne ->vmeta_tgets1
     |->BC_TGETS_Z:
     |  // TAB:RB = GCtab *, STR:RC = GCstr *, RA = dst*8
     |  lwz TMP0, TAB:RB->hmask
     |  lwz TMP1, STR:RC->hash
-    |  lwz NODE:TMP2, TAB:RB->node
+    |  ld NODE:TMP2, TAB:RB->node
     |  and TMP1, TMP1, TMP0		// idx = str->hash & tab->hmask
-    |  slwi TMP0, TMP1, 5
-    |  slwi TMP1, TMP1, 3
+    |  sldi TMP0, TMP1, 5
+    |  sldi TMP1, TMP1, 3
     |  sub TMP1, TMP0, TMP1
     |  add NODE:TMP2, NODE:TMP2, TMP1	// node = tab->node + (idx*32-idx*8)
     |1:
-    |  lwz CARG1, NODE:TMP2->key
-    |   lwz TMP0, 4+offsetof(Node, key)(NODE:TMP2)
-    |    lwz CARG2, NODE:TMP2->val
-    |     lwz TMP1, 4+offsetof(Node, val)(NODE:TMP2)
+    |  ld CARG1, NODE:TMP2->key
+    |    ld CARG2, NODE:TMP2->val
     |  checkstr CARG1; bne >4
-    |   cmpw TMP0, STR:RC; bne >4
-    |    checknil CARG2; beq >5		// Key found, but nil value?
+    |   cmpd CARG1, STR:RC; bne >4
+    |    checknil_noclear CARG2; beq >5	// Key found, but nil value?
     |3:
-    |    stwux CARG2, RA, BASE
-    |     stw TMP1, 4(RA)
+    |    stdx CARG2, RA, BASE
     |  ins_next
     |
     |4:  // Follow hash chain.
-    |  lwz NODE:TMP2, NODE:TMP2->next
-    |  cmplwi NODE:TMP2, 0
+    |  ld NODE:TMP2, NODE:TMP2->next
+    |  cmpldi NODE:TMP2, 0
     |  bne <1
     |  // End of hash chain: key not found, nil result.
     |   li CARG2, LJ_TNIL
     |
     |5:  // Check for __index if table value is nil.
-    |  lwz TAB:TMP2, TAB:RB->metatable
-    |  cmplwi TAB:TMP2, 0
+    |  ld TAB:TMP2, TAB:RB->metatable
+    |  cmpldi TAB:TMP2, 0
     |  beq <3				// No metatable: done.
     |  lbz TMP0, TAB:TMP2->nomm
-    |  andix. TMP0, TMP0, 1<<MM_index
+    |  andi. TMP0, TMP0, 1<<MM_index
     |  bne <3				// 'no __index' flag set: done.
     |  b ->vmeta_tgets
     break;
   case BC_TGETB:
     |  // RA = dst*8, RB = table*8, RC = index*8
-    |  lwzux CARG1, RB, BASE
-    |   srwi TMP0, RC, 3
-    |   lwz TAB:RB, 4(RB)
+    |  ldux CARG1, RB, BASE
+    |   srdi TMP0, RC, 3
+    |   ld TAB:RB, 8(RB)
     |  checktab CARG1; bne ->vmeta_tgetb
-    |  lwz TMP1, TAB:RB->asize
-    |   lwz TMP2, TAB:RB->array
-    |  cmplw TMP0, TMP1; bge ->vmeta_tgetb
-    |  lwzx TMP1, TMP2, RC
+    |  lwz TMP1, TAB:CARG1->asize
+    |   ld TMP2, TAB:CARG1->array
+    |  cmpld TMP0, TMP1; bge ->vmeta_tgetb
+    |  ldx TMP1, TMP2, RC
     |   lfdx f0, TMP2, RC
-    |  checknil TMP1; beq >5
+    |  checknil_noclear TMP1; beq >5
     |1:
     |  ins_next1
     |   stfdx f0, BASE, RA
     |  ins_next2
     |
     |5:  // Check for __index if table value is nil.
-    |  lwz TAB:TMP2, TAB:RB->metatable
-    |  cmplwi TAB:TMP2, 0
+    |  ld TAB:TMP2, TAB:CARG1->metatable
+    |  cmpldi TAB:TMP2, 0
     |  beq <1				// No metatable: done.
     |  lbz TMP2, TAB:TMP2->nomm
-    |  andix. TMP2, TMP2, 1<<MM_index
+    |  andi. TMP2, TMP2, 1<<MM_index
     |  bne <1				// 'no __index' flag set: done.
     |  b ->vmeta_tgetb			// Caveat: preserve TMP0!
     break;
   case BC_TGETR:
     |  // RA = dst*8, RB = table*8, RC = key*8
-    |  add RB, BASE, RB
-    |  lwz TAB:CARG1, 4(RB)
-    |.if DUALNUM
-    |  add RC, BASE, RC
+    |  ldx TAB:CARG1, BASE, RB
+    |  clear_field TAB:CARG1
     |  lwz TMP0, TAB:CARG1->asize
-    |  lwz CARG2, 4(RC)
-    |   lwz TMP1, TAB:CARG1->array
-    |.else
-    |  lfdx f0, BASE, RC
-    |  lwz TMP0, TAB:CARG1->asize
-    |  toint CARG2, f0
-    |   lwz TMP1, TAB:CARG1->array
-    |.endif
-    |  cmplw TMP0, CARG2
-    |   slwi TMP2, CARG2, 3
+    |   ldx CARG2, BASE, RC
+    |   clear_field TAB:CARG2
+    |   ld TMP1, TAB:CARG1->array
+    |  cmpld TMP0, CARG2
+    |   sldi TMP2, CARG2, 3
     |  ble ->vmeta_tgetr		// In array part?
     |   lfdx f14, TMP1, TMP2
     |->BC_TGETR_Z:
@@ -4100,141 +3433,120 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
 
   case BC_TSETV:
     |  // RA = src*8, RB = table*8, RC = key*8
-    |  lwzux CARG1, RB, BASE
-    |  lwzux CARG2, RC, BASE
-    |   lwz TAB:RB, 4(RB)
-    |.if DUALNUM
-    |   lwz RC, 4(RC)
-    |.else
-    |   lfd f0, 0(RC)
-    |.endif
+    |  ldux CARG1, RB, BASE
+    |  ldux CARG2, RC, BASE
     |  checktab CARG1
-    |   checknum cr1, CARG2
     |  bne ->vmeta_tsetv
-    |.if DUALNUM
-    |  lwz TMP0, TAB:RB->asize
-    |   bne cr1, >5
-    |   lwz TMP1, TAB:RB->array
-    |  cmplw TMP0, RC
-    |   slwi TMP0, RC, 3
-    |.else
-    |   bge cr1, >5
-    |  // Convert number key to integer, check for integerness and range.
-    |  fctiwz f1, f0
-    |    fadd f2, f0, TOBIT
-    |  stfd f1, TMPD
-    |   lwz TMP0, TAB:RB->asize
-    |    fsub f2, f2, TOBIT
-    |  lwz TMP2, TMPD_LO
-    |   lwz TMP1, TAB:RB->array
-    |    fcmpu cr1, f0, f2
-    |  cmplw cr0, TMP0, TMP2
-    |  crand 4*cr0+gt, 4*cr0+gt, 4*cr1+eq
-    |   slwi TMP0, TMP2, 3
-    |.endif
+    |   checknum_noclear CARG2
+    |   bne  >5
+    |  lwz TMP0, TAB:CARG1->asize
+    |  clear_field CARG2
+    |   ld TMP1, TAB:CARG1->array
+    |  cmpld TMP0, CARG2
+    |   sldi TMP0, CARG2, 3
     |  ble ->vmeta_tsetv		// Integer key and in array part?
-    |   lwzx TMP2, TMP1, TMP0
-    |  lbz TMP3, TAB:RB->marked
+    |   ldx TMP2, TMP1, TMP0
+    |  lbz TMP3, TAB:CARG1->marked
     |    lfdx f14, BASE, RA
-    |   checknil TMP2; beq >3
+    |   checknil_noclear TMP2; beq >3
     |1:
-    |  andix. TMP2, TMP3, LJ_GC_BLACK	// isblack(table)
+    |  andi. TMP2, TMP3, LJ_GC_BLACK	// isblack(table)
     |    stfdx f14, TMP1, TMP0
     |  bne >7
     |2:
     |  ins_next
     |
     |3:  // Check for __newindex if previous value is nil.
-    |  lwz TAB:TMP2, TAB:RB->metatable
-    |  cmplwi TAB:TMP2, 0
+    |  ld TAB:TMP2, TAB:CARG1->metatable
+    |  cmpldi TAB:TMP2, 0
     |  beq <1				// No metatable: done.
     |  lbz TMP2, TAB:TMP2->nomm
-    |  andix. TMP2, TMP2, 1<<MM_newindex
+    |  andi. TMP2, TMP2, 1<<MM_newindex
     |  bne <1				// 'no __newindex' flag set: done.
     |  b ->vmeta_tsetv
     |
     |5:
     |  checkstr CARG2; bne ->vmeta_tsetv
-    |.if not DUALNUM
-    |  lwz STR:RC, 4(RC)
-    |.endif
+    |  mr RC, CARG2
+    |  ld TAB:RB, 0(RB)
+    |    clear_field TAB:RB
     |  b ->BC_TSETS_Z			// String key?
     |
     |7:  // Possible table write barrier for the value. Skip valiswhite check.
-    |  barrierback TAB:RB, TMP3, TMP0
+    |  barrierback TAB:CARG1, TMP3, TMP0
     |  b <2
     break;
   case BC_TSETS:
     |  // RA = src*8, RB = table*8, RC = str_const*8 (~)
-    |  lwzux CARG1, RB, BASE
-    |   srwi TMP1, RC, 1
-    |    lwz TAB:RB, 4(RB)
-    |   subfic TMP1, TMP1, -4
+    |  ldux CARG1, RB, BASE
+    |    ld TAB:RB, 0(RB)
+    |    clear_field TAB:RB
+    |   subfic TMP1, RC, -8
     |  checktab CARG1
-    |   lwzx STR:RC, KBASE, TMP1	// KBASE-4-str_const*4
+    |   ldx STR:RC, KBASE, TMP1		// KBASE-8-str_const*8
     |  bne ->vmeta_tsets1
     |->BC_TSETS_Z:
     |  // TAB:RB = GCtab *, STR:RC = GCstr *, RA = src*8
     |  lwz TMP0, TAB:RB->hmask
     |  lwz TMP1, STR:RC->hash
-    |  lwz NODE:TMP2, TAB:RB->node
+    |  ld NODE:TMP2, TAB:RB->node
     |    stb ZERO, TAB:RB->nomm		// Clear metamethod cache.
     |  and TMP1, TMP1, TMP0		// idx = str->hash & tab->hmask
     |    lfdx f14, BASE, RA
-    |  slwi TMP0, TMP1, 5
-    |  slwi TMP1, TMP1, 3
+    |  sldi TMP0, TMP1, 5
+    |  sldi TMP1, TMP1, 3
     |  sub TMP1, TMP0, TMP1
     |    lbz TMP3, TAB:RB->marked
     |  add NODE:TMP2, NODE:TMP2, TMP1	// node = tab->node + (idx*32-idx*8)
     |1:
-    |  lwz CARG1, NODE:TMP2->key
-    |   lwz TMP0, 4+offsetof(Node, key)(NODE:TMP2)
-    |    lwz CARG2, NODE:TMP2->val
-    |     lwz NODE:TMP1, NODE:TMP2->next
+    |  ld CARG1, NODE:TMP2->key
+    |    ld CARG2, NODE:TMP2->val
+    |     ld NODE:TMP1, NODE:TMP2->next
     |  checkstr CARG1; bne >5
-    |   cmpw TMP0, STR:RC; bne >5
-    |    checknil CARG2; beq >4		// Key found, but nil value?
+    |   cmpd CARG1, STR:RC; bne >5
+    |    checknil_noclear CARG2; beq >4	// Key found, but nil value?
     |2:
-    |  andix. TMP0, TMP3, LJ_GC_BLACK	// isblack(table)
+    |  andi. TMP0, TMP3, LJ_GC_BLACK	// isblack(table)
     |    stfd f14, NODE:TMP2->val
     |  bne >7
     |3:
     |  ins_next
     |
     |4:  // Check for __newindex if previous value is nil.
-    |  lwz TAB:TMP1, TAB:RB->metatable
-    |  cmplwi TAB:TMP1, 0
+    |  ld TAB:TMP1, TAB:RB->metatable
+    |  cmpldi TAB:TMP1, 0
     |  beq <2				// No metatable: done.
     |  lbz TMP0, TAB:TMP1->nomm
-    |  andix. TMP0, TMP0, 1<<MM_newindex
+    |  andi. TMP0, TMP0, 1<<MM_newindex
     |  bne <2				// 'no __newindex' flag set: done.
     |  b ->vmeta_tsets
     |
     |5:  // Follow hash chain.
-    |  cmplwi NODE:TMP1, 0
+    |  cmpldi NODE:TMP1, 0
     |   mr NODE:TMP2, NODE:TMP1
     |  bne <1
     |  // End of hash chain: key not found, add a new one.
     |
     |  // But check for __newindex first.
-    |  lwz TAB:TMP1, TAB:RB->metatable
+    |  ld TAB:TMP1, TAB:RB->metatable
     |   la CARG3, DISPATCH_GL(tmptv)(DISPATCH)
-    |   stw PC, SAVE_PC
+    |   std PC, SAVE_PC
     |   mr CARG1, L
-    |  cmplwi TAB:TMP1, 0
-    |   stp BASE, L->base
+    |  cmpldi TAB:TMP1, 0
+    |   std BASE, L->base
     |  beq >6				// No metatable: continue.
     |  lbz TMP0, TAB:TMP1->nomm
-    |  andix. TMP0, TMP0, 1<<MM_newindex
+    |  andi. TMP0, TMP0, 1<<MM_newindex
     |  beq ->vmeta_tsets		// 'no __newindex' flag NOT set: check.
     |6:
     |  li TMP0, LJ_TSTR
-    |   stw STR:RC, 4(CARG3)
+    |  set_oper_type TMP0, TMP0
+    |  add TMP0, TMP0, STR:RC
     |   mr CARG2, TAB:RB
-    |  stw TMP0, 0(CARG3)
+    |  std TMP0, 0(CARG3)
     |  bl extern lj_tab_newkey		// (lua_State *L, GCtab *t, TValue *k)
     |  // Returns TValue *.
-    |  lp BASE, L->base
+    |  ld BASE, L->base
     |  stfd f14, 0(CRET1)
     |  b <3				// No 2nd write barrier needed.
     |
@@ -4244,60 +3556,54 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     break;
   case BC_TSETB:
     |  // RA = src*8, RB = table*8, RC = index*8
-    |  lwzux CARG1, RB, BASE
-    |   srwi TMP0, RC, 3
-    |   lwz TAB:RB, 4(RB)
+    |  ldux CARG1, RB, BASE
+    |   srdi TMP0, RC, 3
+    |   ld TAB:RB, 8(RB)
     |  checktab CARG1; bne ->vmeta_tsetb
-    |  lwz TMP1, TAB:RB->asize
-    |   lwz TMP2, TAB:RB->array
-    |    lbz TMP3, TAB:RB->marked
-    |  cmplw TMP0, TMP1
+    |  lwz TMP1, TAB:CARG1->asize
+    |   ld TMP2, TAB:CARG1->array
+    |    lbz TMP3, TAB:CARG1->marked
+    |  cmpld TMP0, TMP1
     |   lfdx f14, BASE, RA
     |  bge ->vmeta_tsetb
-    |  lwzx TMP1, TMP2, RC
-    |  checknil TMP1; beq >5
+    |  ldx TMP1, TMP2, RC
+    |  checknil_noclear TMP1; beq >5
     |1:
-    |  andix. TMP0, TMP3, LJ_GC_BLACK	// isblack(table)
+    |  andi. TMP0, TMP3, LJ_GC_BLACK	// isblack(table)
     |   stfdx f14, TMP2, RC
     |  bne >7
     |2:
     |  ins_next
     |
     |5:  // Check for __newindex if previous value is nil.
-    |  lwz TAB:TMP1, TAB:RB->metatable
-    |  cmplwi TAB:TMP1, 0
+    |  ld TAB:TMP1, TAB:CARG1->metatable
+    |  cmpldi TAB:TMP1, 0
     |  beq <1				// No metatable: done.
     |  lbz TMP1, TAB:TMP1->nomm
-    |  andix. TMP1, TMP1, 1<<MM_newindex
+    |  andi. TMP1, TMP1, 1<<MM_newindex
     |  bne <1				// 'no __newindex' flag set: done.
     |  b ->vmeta_tsetb			// Caveat: preserve TMP0!
     |
     |7:  // Possible table write barrier for the value. Skip valiswhite check.
-    |  barrierback TAB:RB, TMP3, TMP0
+    |  barrierback TAB:CARG1, TMP3, TMP0
     |  b <2
     break;
   case BC_TSETR:
     |  // RA = dst*8, RB = table*8, RC = key*8
     |  add RB, BASE, RB
-    |  lwz TAB:CARG2, 4(RB)
-    |.if DUALNUM
+    |  ld TAB:CARG2, 0(RB)
+    |  clear_field TAB:CARG2
     |  add RC, BASE, RC
     |    lbz TMP3, TAB:CARG2->marked
     |  lwz TMP0, TAB:CARG2->asize
-    |  lwz CARG3, 4(RC)
-    |   lwz TMP1, TAB:CARG2->array
-    |.else
-    |  lfdx f0, BASE, RC
-    |    lbz TMP3, TAB:CARG2->marked
-    |  lwz TMP0, TAB:CARG2->asize
-    |  toint CARG3, f0
-    |   lwz TMP1, TAB:CARG2->array
-    |.endif
-    |  andix. TMP2, TMP3, LJ_GC_BLACK	// isblack(table)
+    |  ld CARG3, 0(RC)
+    |  clear_field CARG3
+    |   ld TMP1, TAB:CARG2->array
+    |  andi. TMP2, TMP3, LJ_GC_BLACK	// isblack(table)
     |  bne >7
     |2:
-    |  cmplw TMP0, CARG3
-    |   slwi TMP2, CARG3, 3
+    |  cmpld TMP0, CARG3
+    |   sldi TMP2, CARG3, 3
     |   lfdx f14, BASE, RA
     |  ble ->vmeta_tsetr		// In array part?
     |  ins_next1
@@ -4315,25 +3621,27 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  add RA, BASE, RA
     |1:
     |   add TMP3, KBASE, RD
-    |  lwz TAB:CARG2, -4(RA)		// Guaranteed to be a table.
+    |  ld TAB:CARG2, -8(RA)		// Guaranteed to be a table.
+    |  clear_field TAB:CARG2
     |    addic. TMP0, MULTRES, -8
-    |   lwz TMP3, 4(TMP3)		// Integer constant is in lo-word.
-    |    srwi CARG3, TMP0, 3
+    |   ld TMP3, 0(TMP3)		// Integer constant needs to be cleaned
+    |    srdi CARG3, TMP0, 3
+    |   clear_field TMP3
     |    beq >4				// Nothing to copy?
     |  add CARG3, CARG3, TMP3
     |  lwz TMP2, TAB:CARG2->asize
-    |   slwi TMP1, TMP3, 3
+    |   sldi TMP1, TMP3, 3
     |    lbz TMP3, TAB:CARG2->marked
-    |  cmplw CARG3, TMP2
+    |  cmpld CARG3, TMP2
     |   add TMP2, RA, TMP0
-    |   lwz TMP0, TAB:CARG2->array
+    |   ld TMP0, TAB:CARG2->array
     |  bgt >5
     |   add TMP1, TMP1, TMP0
-    |    andix. TMP0, TMP3, LJ_GC_BLACK	// isblack(table)
+    |    andi. TMP0, TMP3, LJ_GC_BLACK	// isblack(table)
     |3:  // Copy result slots to table.
     |   lfd f0, 0(RA)
     |  addi RA, RA, 8
-    |  cmpw cr1, RA, TMP2
+    |  cmpd cr1, RA, TMP2
     |   stfd f0, 0(TMP1)
     |    addi TMP1, TMP1, 8
     |  blt cr1, <3
@@ -4342,9 +3650,9 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  ins_next
     |
     |5:  // Need to resize array part.
-    |   stp BASE, L->base
+    |   std BASE, L->base
     |  mr CARG1, L
-    |   stw PC, SAVE_PC
+    |   std PC, SAVE_PC
     |  mr SAVE0, RD
     |  bl extern lj_tab_reasize		// (lua_State *L, GCtab *t, int nasize)
     |  // Must not reallocate the stack.
@@ -4365,12 +3673,11 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     break;
   case BC_CALL:
     |  // RA = base*8, (RB = (nresults+1)*8,) RC = (nargs+1)*8
-    |  mr TMP2, BASE
-    |  lwzux TMP0, BASE, RA
-    |   lwz LFUNC:RB, 4(BASE)
+    |  mr TMP2, BASE			// needed on vmeta_call!
+    |  ldux LFUNC:RB, BASE, RA
     |    subi NARGS8:RC, NARGS8:RC, 8
-    |   addi BASE, BASE, 8
-    |  checkfunc TMP0; bne ->vmeta_call
+    |   addi BASE, BASE, 16
+    |  checkfunc RB; bne ->vmeta_call
     |  ins_call
     break;
 
@@ -4381,28 +3688,29 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     break;
   case BC_CALLT:
     |  // RA = base*8, (RB = 0,) RC = (nargs+1)*8
-    |  lwzux TMP0, RA, BASE
-    |   lwz LFUNC:RB, 4(RA)
+    |  ldux TMP0, RA, BASE
+    |   ld LFUNC:RB, 0(RA)
+    |   clear_field RB
     |    subi NARGS8:RC, NARGS8:RC, 8
-    |    lwz TMP1, FRAME_PC(BASE)
+    |    ld TMP1, FRAME_PC(BASE)
     |  checkfunc TMP0
-    |   addi RA, RA, 8
+    |   addi RA, RA, 16
     |  bne ->vmeta_callt
     |->BC_CALLT_Z:
-    |  andix. TMP0, TMP1, FRAME_TYPE	// Caveat: preserve cr0 until the crand.
+    |  andi. TMP0, TMP1, FRAME_TYPE	// Caveat: preserve cr0 until the crand.
     |   lbz TMP3, LFUNC:RB->ffid
     |    xori TMP2, TMP1, FRAME_VARG
-    |    cmplwi cr1, NARGS8:RC, 0
+    |    cmpldi cr1, NARGS8:RC, 0
     |  bne >7
     |1:
-    |  stw LFUNC:RB, FRAME_FUNC(BASE)	// Copy function down, but keep PC.
+    |  std LFUNC:RB, FRAME_FUNC(BASE)	// Copy function down, but keep PC.
     |  li TMP2, 0
-    |   cmplwi cr7, TMP3, 1		// (> FF_C) Calling a fast function?
+    |   cmpldi cr7, TMP3, 1		// (> FF_C) Calling a fast function?
     |    beq cr1, >3
     |2:
     |  addi TMP3, TMP2, 8
     |   lfdx f0, RA, TMP2
-    |  cmplw cr1, TMP3, NARGS8:RC
+    |  cmpld cr1, TMP3, NARGS8:RC
     |   stfdx f0, BASE, TMP2
     |  mr TMP2, TMP3
     |  bne cr1, <2
@@ -4416,17 +3724,18 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  lwz INS, -4(TMP1)
     |  decode_RA8 RA, INS
     |  sub TMP1, BASE, RA
-    |  lwz LFUNC:TMP1, FRAME_FUNC-8(TMP1)
-    |  lwz TMP1, LFUNC:TMP1->pc
-    |  lwz KBASE, PC2PROTO(k)(TMP1)	// Need to prepare KBASE.
+    |  ld LFUNC:TMP1, FRAME_FUNC-16(TMP1)
+    |  clear_field TMP1
+    |  ld TMP1, LFUNC:TMP1->pc
+    |  ld KBASE, PC2PROTO(k)(TMP1)	// Need to prepare KBASE.
     |  b <4
     |
     |7:  // Tailcall from a vararg function.
-    |  andix. TMP0, TMP2, FRAME_TYPEP
+    |  andi. TMP0, TMP2, FRAME_TYPEP
     |  bne <1				// Vararg frame below?
     |  sub BASE, BASE, TMP2		// Relocate BASE down.
-    |  lwz TMP1, FRAME_PC(BASE)
-    |  andix. TMP0, TMP1, FRAME_TYPE
+    |  ld TMP1, FRAME_PC(BASE)
+    |  andi. TMP0, TMP1, FRAME_TYPE
     |  b <1
     break;
 
@@ -4434,16 +3743,14 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  // RA = base*8, (RB = (nresults+1)*8, RC = (nargs+1)*8 ((2+1)*8))
     |  mr TMP2, BASE
     |  add BASE, BASE, RA
-    |  lwz TMP1, -24(BASE)
-    |   lwz LFUNC:RB, -20(BASE)
-    |    lfd f1, -8(BASE)
-    |    lfd f0, -16(BASE)
-    |  stw TMP1, 0(BASE)		// Copy callable.
-    |   stw LFUNC:RB, 4(BASE)
-    |  checkfunc TMP1
-    |    stfd f1, 16(BASE)		// Copy control var.
+    |  ld LFUNC:RB, -24(BASE)
+    |   ld CARG1, -16(BASE)
+    |   ld CARG2, -8(BASE)
+    |  std LFUNC:RB, 0(BASE)		// Copy callable.
+    |  checkfunc LFUNC:RB
     |     li NARGS8:RC, 16		// Iterators get 2 arguments.
-    |    stfdu f0, 8(BASE)		// Copy state.
+    |    std CARG2, 24(BASE)		// Copy state.
+    |    stdu CARG1, 16(BASE)		// Copy control var.
     |  bne ->vmeta_call
     |  ins_call
     break;
@@ -4454,35 +3761,29 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  // NYI: add hotloop, record BC_ITERN.
     |.endif
     |  add RA, BASE, RA
-    |  lwz TAB:RB, -12(RA)
-    |  lwz RC, -4(RA)			// Get index from control var.
+    |  ld TAB:RB, -16(RA)
+    |  clear_field TAB:RB
+    |  lwz RC, -8(RA)			// Get index from control var.
     |  lwz TMP0, TAB:RB->asize
-    |  lwz TMP1, TAB:RB->array
+    |  ld TMP1, TAB:RB->array
     |   addi PC, PC, 4
     |1:  // Traverse array part.
-    |  cmplw RC, TMP0
-    |   slwi TMP3, RC, 3
+    |  cmpld RC, TMP0
+    |   sldi TMP3, RC, 3
     |  bge >5				// Index points after array part?
-    |  lwzx TMP2, TMP1, TMP3
+    |  ldx TMP2, TMP1, TMP3
     |   lfdx f0, TMP1, TMP3
-    |  checknil TMP2
+    |  checknil_noclear TMP2
     |     lwz INS, -4(PC)
     |  beq >4
-    |.if DUALNUM
-    |   stw RC, 4(RA)
-    |   stw TISNUM, 0(RA)
-    |.else
-    |   tonum_u f1, RC
-    |.endif
+    |   add RC, RC, TISNUM
+    |   std RC, 0(RA)
     |    addi RC, RC, 1
     |     addis TMP3, PC, -(BCBIAS_J*4 >> 16)
     |  stfd f0, 8(RA)
     |     decode_RD4 TMP1, INS
-    |    stw RC, -4(RA)			// Update control var.
+    |    std RC, -8(RA)			// Update control var.
     |     add PC, TMP1, TMP3
-    |.if not DUALNUM
-    |   stfd f1, 0(RA)
-    |.endif
     |3:
     |  ins_next
     |
@@ -4493,17 +3794,17 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |5:  // Traverse hash part.
     |  lwz TMP1, TAB:RB->hmask
     |  sub RC, RC, TMP0
-    |   lwz TMP2, TAB:RB->node
+    |   ld TMP2, TAB:RB->node
     |6:
-    |  cmplw RC, TMP1			// End of iteration? Branch to ITERL+1.
-    |   slwi TMP3, RC, 5
+    |  cmpld RC, TMP1			// End of iteration? Branch to ITERL+1.
+    |   sldi TMP3, RC, 5
     |  bgty <3
-    |   slwi RB, RC, 3
+    |   sldi RB, RC, 3
     |   sub TMP3, TMP3, RB
-    |  lwzx RB, TMP2, TMP3
+    |  ldx RB, TMP2, TMP3
     |  lfdx f0, TMP2, TMP3
     |   add NODE:TMP3, TMP2, TMP3
-    |  checknil RB
+    |  checknil_noclear RB
     |     lwz INS, -4(PC)
     |  beq >7
     |   lfd f1, NODE:TMP3->key
@@ -4514,7 +3815,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |   stfd f1, 0(RA)
     |    addi RC, RC, 1
     |     add PC, TMP1, TMP2
-    |    stw RC, -4(RA)			// Update control var.
+    |    std RC, -8(RA)			// Update control var.
     |  b <3
     |
     |7:  // Skip holes in hash part.
@@ -4525,54 +3826,54 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
   case BC_ISNEXT:
     |  // RA = base*8, RD = target (points to ITERN)
     |  add RA, BASE, RA
-    |  lwz TMP0, -24(RA)
-    |  lwz CFUNC:TMP1, -20(RA)
-    |   lwz TMP2, -16(RA)
-    |    lwz TMP3, -8(RA)
-    |   cmpwi cr0, TMP2, LJ_TTAB
-    |  cmpwi cr1, TMP0, LJ_TFUNC
-    |    cmpwi cr6, TMP3, LJ_TNIL
+    |  ld TMP1, -24(RA)
+    |  get_oper_type TMP0, TMP1
+    |  cmpdi cr1, TMP0, LJ_TFUNC
+    |   ld TMP2, -16(RA)
+    |   get_oper_type TMP2, TMP2
+    |   cmpdi cr0, TMP2, LJ_TTAB
+    |    ld TMP3, -8(RA)
+    |    get_oper_type TMP3, TMP3
+    |    cmpdi cr6, TMP3, LJ_TNIL
+    |
     |  bne cr1, >5
+    |
+    |  clear_field TMP1
     |  lbz TMP1, CFUNC:TMP1->ffid
     |   crand 4*cr0+eq, 4*cr0+eq, 4*cr6+eq
     |  cmpwi cr7, TMP1, FF_next_N
-    |    srwi TMP0, RD, 1
+    |    srdi TMP0, RD, 1
     |  crand 4*cr0+eq, 4*cr0+eq, 4*cr7+eq
     |    add TMP3, PC, TMP0
     |  bne cr0, >5
     |  lus TMP1, 0xfffe
     |  ori TMP1, TMP1, 0x7fff
-    |  stw ZERO, -4(RA)			// Initialize control var.
-    |  stw TMP1, -8(RA)
+    |  sldi TMP1, TMP1, 32		// Initialize control var.
+    |  std TMP1, -8(RA)
     |    addis PC, TMP3, -(BCBIAS_J*4 >> 16)
     |1:
     |  ins_next
     |5:  // Despecialize bytecode if any of the checks fail.
     |  li TMP0, BC_JMP
     |   li TMP1, BC_ITERC
-    |  stb TMP0, -1(PC)
+    |  stb TMP0, -4(PC)
     |    addis PC, TMP3, -(BCBIAS_J*4 >> 16)
-    |   stb TMP1, 3(PC)
+    |   stb TMP1, 0(PC)
     |  b <1
     break;
 
   case BC_VARG:
     |  // RA = base*8, RB = (nresults+1)*8, RC = numparams*8
-    |  lwz TMP0, FRAME_PC(BASE)
+    |  ld TMP0, FRAME_PC(BASE)
     |  add RC, BASE, RC
     |   add RA, BASE, RA
     |  addi RC, RC, FRAME_VARG
     |   add TMP2, RA, RB
-    |  subi TMP3, BASE, 8		// TMP3 = vtop
+    |  subi TMP3, BASE, 16		// TMP3 = vtop
     |  sub RC, RC, TMP0			// RC = vbase
     |  // Note: RC may now be even _above_ BASE if nargs was < numparams.
-    |  cmplwi cr1, RB, 0
-    |.if PPE
-    |   sub TMP1, TMP3, RC
-    |   cmpwi TMP1, 0
-    |.else
+    |  cmpldi cr1, RB, 0
     |   sub. TMP1, TMP3, RC
-    |.endif
     |  beq cr1, >5			// Copy all varargs?
     |   subi TMP2, TMP2, 16
     |   ble >2				// No vararg slots?
@@ -4580,49 +3881,49 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  lfd f0, 0(RC)
     |   addi RC, RC, 8
     |  stfd f0, 0(RA)
-    |  cmplw RA, TMP2
-    |   cmplw cr1, RC, TMP3
+    |  cmpld RA, TMP2
+    |   cmpld cr1, RC, TMP3
     |  bge >3				// All destination slots filled?
     |    addi RA, RA, 8
     |   blt cr1, <1			// More vararg slots?
     |2:  // Fill up remainder with nil.
-    |  stw TISNIL, 0(RA)
-    |  cmplw RA, TMP2
+    |  std TISNIL, 0(RA)
+    |  cmpld RA, TMP2
     |   addi RA, RA, 8
     |  blt <2
     |3:
     |  ins_next
     |
     |5:  // Copy all varargs.
-    |  lwz TMP0, L->maxstack
+    |  ld TMP0, L->maxstack
     |   li MULTRES, 8			// MULTRES = (0+1)*8
     |  bley <3				// No vararg slots?
     |  add TMP2, RA, TMP1
-    |  cmplw TMP2, TMP0
+    |  cmpld TMP2, TMP0
     |   addi MULTRES, TMP1, 8
     |  bgt >7
     |6:
     |  lfd f0, 0(RC)
     |   addi RC, RC, 8
     |  stfd f0, 0(RA)
-    |  cmplw RC, TMP3
+    |  cmpld RC, TMP3
     |   addi RA, RA, 8
     |  blt <6				// More vararg slots?
     |  b <3
     |
     |7:  // Grow stack for varargs.
     |  mr CARG1, L
-    |   stp RA, L->top
+    |   std RA, L->top
     |  sub SAVE0, RC, BASE		// Need delta, because BASE may change.
-    |   stp BASE, L->base
+    |   std BASE, L->base
     |  sub RA, RA, BASE
-    |   stw PC, SAVE_PC
-    |  srwi CARG2, TMP1, 3
+    |   std PC, SAVE_PC
+    |  srdi CARG2, TMP1, 3
     |  bl extern lj_state_growstack	// (lua_State *L, int n)
-    |  lp BASE, L->base
+    |  ld BASE, L->base
     |  add RA, BASE, RA
     |  add RC, BASE, SAVE0
-    |  subi TMP3, BASE, 8
+    |  subi TMP3, BASE, 16
     |  b <6
     break;
 
@@ -4636,19 +3937,19 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
 
   case BC_RET:
     |  // RA = results*8, RD = (nresults+1)*8
-    |  lwz PC, FRAME_PC(BASE)
+    |  ld PC, FRAME_PC(BASE)
     |   add RA, BASE, RA
     |    mr MULTRES, RD
     |1:
-    |  andix. TMP0, PC, FRAME_TYPE
+    |  andi. TMP0, PC, FRAME_TYPE
     |   xori TMP1, PC, FRAME_VARG
     |  bne ->BC_RETV_Z
     |
     |->BC_RET_Z:
     |  // BASE = base, RA = resultptr, RD = (nresults+1)*8, PC = return
     |   lwz INS, -4(PC)
-    |  cmpwi RD, 8
-    |   subi TMP2, BASE, 8
+    |  cmpdi RD, 8
+    |   subi TMP2, BASE, 16
     |   subi RC, RD, 8
     |   decode_RB8 RB, INS
     |  beq >3
@@ -4656,72 +3957,74 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |2:
     |  addi TMP3, TMP1, 8
     |   lfdx f0, RA, TMP1
-    |  cmpw TMP3, RC
+    |  cmpd TMP3, RC
     |   stfdx f0, TMP2, TMP1
     |  beq >3
     |  addi TMP1, TMP3, 8
     |   lfdx f1, RA, TMP3
-    |  cmpw TMP1, RC
+    |  cmpd TMP1, RC
     |   stfdx f1, TMP2, TMP3
     |  bne <2
     |3:
     |5:
-    |  cmplw RB, RD
+    |  cmpld RB, RD
     |   decode_RA8 RA, INS
     |  bgt >6
     |   sub BASE, TMP2, RA
-    |  lwz LFUNC:TMP1, FRAME_FUNC(BASE)
+    |  ld LFUNC:TMP1, FRAME_FUNC(BASE)
+    |  clear_field TMP1
     |  ins_next1
-    |  lwz TMP1, LFUNC:TMP1->pc
-    |  lwz KBASE, PC2PROTO(k)(TMP1)
+    |  ld TMP1, LFUNC:TMP1->pc
+    |  ld KBASE, PC2PROTO(k)(TMP1)
     |  ins_next2
     |
     |6:  // Fill up results with nil.
     |  subi TMP1, RD, 8
     |   addi RD, RD, 8
-    |  stwx TISNIL, TMP2, TMP1
+    |  stdx TISNIL, TMP2, TMP1
     |  b <5
     |
     |->BC_RETV_Z:  // Non-standard return case.
-    |  andix. TMP2, TMP1, FRAME_TYPEP
+    |  andi. TMP2, TMP1, FRAME_TYPEP
     |  bne ->vm_return
     |  // Return from vararg function: relocate BASE down.
     |  sub BASE, BASE, TMP1
-    |  lwz PC, FRAME_PC(BASE)
+    |  ld PC, FRAME_PC(BASE)
     |  b <1
     break;
 
   case BC_RET0: case BC_RET1:
     |  // RA = results*8, RD = (nresults+1)*8
-    |  lwz PC, FRAME_PC(BASE)
+    |  ld PC, FRAME_PC(BASE)
     |   add RA, BASE, RA
     |    mr MULTRES, RD
-    |  andix. TMP0, PC, FRAME_TYPE
+    |  andi. TMP0, PC, FRAME_TYPE
     |   xori TMP1, PC, FRAME_VARG
     |  bney ->BC_RETV_Z
     |
     |  lwz INS, -4(PC)
-    |   subi TMP2, BASE, 8
+    |   subi TMP2, BASE, 16
     |  decode_RB8 RB, INS
     if (op == BC_RET1) {
       |  lfd f0, 0(RA)
       |  stfd f0, 0(TMP2)
     }
     |5:
-    |  cmplw RB, RD
+    |  cmpld RB, RD
     |   decode_RA8 RA, INS
     |  bgt >6
     |   sub BASE, TMP2, RA
-    |  lwz LFUNC:TMP1, FRAME_FUNC(BASE)
+    |   ld LFUNC:TMP1, FRAME_FUNC(BASE)
+    |   clear_field TMP1
     |  ins_next1
-    |  lwz TMP1, LFUNC:TMP1->pc
-    |  lwz KBASE, PC2PROTO(k)(TMP1)
+    |  ld TMP1, LFUNC:TMP1->pc
+    |  ld KBASE, PC2PROTO(k)(TMP1)
     |  ins_next2
     |
     |6:  // Fill up results with nil.
     |  subi TMP1, RD, 8
     |   addi RD, RD, 8
-    |  stwx TISNIL, TMP2, TMP1
+    |  stdx TISNIL, TMP2, TMP1
     |  b <5
     break;
 
@@ -4743,48 +4046,46 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
   case BC_IFORL:
     |  // RA = base*8, RD = target (after end of loop or start of loop)
     vk = (op == BC_IFORL || op == BC_JFORL);
-    |.if DUALNUM
     |  // Integer loop.
-    |  lwzux TMP1, RA, BASE
-    |   lwz CARG1, FORL_IDX*8+4(RA)
-    |  cmplw cr0, TMP1, TISNUM
+    |  ldux CARG1, RA, BASE
+    |   get_oper_type TMP1, CARG1
+    |   checknum cr0, CARG1
     if (vk) {
-      |   lwz CARG3, FORL_STEP*8+4(RA)
+      |   ld CARG3, FORL_STEP*8(RA)
+      |   checknum CARG3
       |  bne >9
-      |.if GPR64
       |  // Need to check overflow for (a<<32) + (b<<32).
       |  rldicr TMP0, CARG1, 32, 31
       |  rldicr TMP2, CARG3, 32, 31
       |  add CARG1, CARG1, CARG3
       |  addo. TMP0, TMP0, TMP2
-      |.else
-      |  addo. CARG1, CARG1, CARG3
-      |.endif
-      |    cmpwi cr6, CARG3, 0
-      |   lwz CARG2, FORL_STOP*8+4(RA)
+      |    cmpdi cr6, CARG3, 0
+      |   ld CARG2, FORL_STOP*8(RA)
+      |    checknum CARG2
       |  bso >6
       |4:
-      |  stw CARG1, FORL_IDX*8+4(RA)
+      |  std CARG1, FORL_IDX*8(RA)
+      |   checknum CARG1
     } else {
-      |  lwz TMP3, FORL_STEP*8(RA)
-      |   lwz CARG3, FORL_STEP*8+4(RA)
-      |  lwz TMP2, FORL_STOP*8(RA)
-      |   lwz CARG2, FORL_STOP*8+4(RA)
-      |  cmplw cr7, TMP3, TISNUM
-      |  cmplw cr1, TMP2, TISNUM
+      |  ld CARG3, FORL_STEP*8(RA)
+      |    get_oper_type TMP3, CARG3
+      |    checknum cr7, CARG3
+      |  ld CARG2, FORL_STOP*8(RA)
+      |    get_oper_type TMP2, CARG2
+      |    checknum cr1, CARG2
       |  crand 4*cr0+eq, 4*cr0+eq, 4*cr7+eq
       |  crand 4*cr0+eq, 4*cr0+eq, 4*cr1+eq
-      |    cmpwi cr6, CARG3, 0
+      |    cmpdi cr6, CARG3, 0
       |  bne >9
     }
     |    blt cr6, >5
-    |  cmpw CARG1, CARG2
+    |  cmpd CARG1, CARG2
     |1:
-    |   stw TISNUM, FORL_EXT*8(RA)
     if (op != BC_JFORL) {
-      |  srwi RD, RD, 1
+      |  srdi RD, RD, 1
     }
-    |   stw CARG1, FORL_EXT*8+4(RA)
+    |   add_oper_type CARG1, TISNUM
+    |   std CARG1, FORL_EXT*8(RA)
     if (op != BC_JFORL) {
       |  add RD, PC, RD
     }
@@ -4802,46 +4103,32 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |2:
     |  ins_next
     |5:  // Invert check for negative step.
-    |  cmpw CARG2, CARG1
+    |  cmpd CARG2, CARG1
     |  b <1
     if (vk) {
       |6:  // Potential overflow.
-      |  checkov TMP0, <4		// Ignore unrelated overflow.
+      |  checkov <4			// Ignore unrelated overflow.
       |  b <2
     }
-    |.endif
     if (vk) {
-      |.if DUALNUM
       |9:  // FP loop.
       |  lfd f1, FORL_IDX*8(RA)
-      |.else
-      |  lfdux f1, RA, BASE
-      |.endif
       |  lfd f3, FORL_STEP*8(RA)
       |  lfd f2, FORL_STOP*8(RA)
-      |   lwz TMP3, FORL_STEP*8(RA)
+      |   ld TMP3, FORL_STEP*8(RA)
       |  fadd f1, f1, f3
       |  stfd f1, FORL_IDX*8(RA)
     } else {
-      |.if DUALNUM
       |9:  // FP loop.
-      |.else
-      |  lwzux TMP1, RA, BASE
-      |  lwz TMP3, FORL_STEP*8(RA)
-      |  lwz TMP2, FORL_STOP*8(RA)
-      |  cmplw cr0, TMP1, TISNUM
-      |  cmplw cr7, TMP3, TISNUM
-      |  cmplw cr1, TMP2, TISNUM
-      |.endif
       |   lfd f1, FORL_IDX*8(RA)
       |  crand 4*cr0+lt, 4*cr0+lt, 4*cr7+lt
       |  crand 4*cr0+lt, 4*cr0+lt, 4*cr1+lt
       |   lfd f2, FORL_STOP*8(RA)
       |  bge ->vmeta_for
     }
-    |  cmpwi cr6, TMP3, 0
+    |  cmpdi cr6, TMP3, 0
     if (op != BC_JFORL) {
-      |  srwi RD, RD, 1
+      |  srdi RD, RD, 1
     }
     |   stfd f1, FORL_EXT*8(RA)
     if (op != BC_JFORL) {
@@ -4855,11 +4142,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     if (op == BC_FORI) {
       |  bgt >3
     } else if (op == BC_IFORL) {
-      |.if DUALNUM
       |  bgty <2
-      |.else
-      |  bgt >2
-      |.endif
       |1:
       |  addis PC, RD, -(BCBIAS_J*4 >> 16)
     } else if (op == BC_JFORI) {
@@ -4867,12 +4150,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     } else {
       |  bley =>BC_JLOOP
     }
-    |.if DUALNUM
     |  b <2
-    |.else
-    |2:
-    |  ins_next
-    |.endif
     |5:  // Negative step.
     if (op == BC_FORI) {
       |  bge <2
@@ -4907,17 +4185,14 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
 #endif
   case BC_IITERL:
     |  // RA = base*8, RD = target
-    |  lwzux TMP1, RA, BASE
-    |   lwz TMP2, 4(RA)
-    |  checknil TMP1; beq >1		// Stop if iterator returned nil.
+    |  ldux TMP1, RA, BASE
+    |  checknil_noclear TMP1; beq >1	// Stop if iterator returned nil.
     if (op == BC_JITERL) {
-      |  stw TMP1, -8(RA)
-      |   stw TMP2, -4(RA)
+      |   std TMP1, -8(RA)
       |  b =>BC_JLOOP
     } else {
       |  branch_RD			// Otherwise save control var + branch.
-      |  stw TMP1, -8(RA)
-      |   stw TMP2, -4(RA)
+      |   std TMP1, -8(RA)
     }
     |1:
     |  ins_next
@@ -4940,19 +4215,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
 
   case BC_JLOOP:
     |.if JIT
-    |  // RA = base*8 (ignored), RD = traceno*8
-    |  lwz TMP1, DISPATCH_J(trace)(DISPATCH)
-    |  srwi RD, RD, 1
-    |  // Traces on PPC don't store the trace number, so use 0.
-    |   stw ZERO, DISPATCH_GL(vmstate)(DISPATCH)
-    |  lwzx TRACE:TMP2, TMP1, RD
-    |  clrso TMP1
-    |  lp TMP2, TRACE:TMP2->mcode
-    |   stw BASE, DISPATCH_GL(jit_base)(DISPATCH)
-    |  mtctr TMP2
-    |   addi JGL, DISPATCH, GG_DISP2G+32768
-    |   stw L, DISPATCH_GL(tmpbuf.L)(DISPATCH)
-    |  bctr
+    |  NYI
     |.endif
     break;
 
@@ -4978,17 +4241,17 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
 #endif
   case BC_IFUNCF:
     |  // BASE = new base, RA = BASE+framesize*8, RB = LFUNC, RC = nargs*8
-    |  lwz TMP2, L->maxstack
+    |  ld TMP2, L->maxstack
     |   lbz TMP1, -4+PC2PROTO(numparams)(PC)
-    |    lwz KBASE, -4+PC2PROTO(k)(PC)
-    |  cmplw RA, TMP2
-    |   slwi TMP1, TMP1, 3
+    |    ld KBASE, -4+PC2PROTO(k)(PC)
+    |  cmpld RA, TMP2
+    |   sldi TMP1, TMP1, 3
     |  bgt ->vm_growstack_l
     if (op != BC_JFUNCF) {
       |  ins_next1
     }
     |2:
-    |  cmplw NARGS8:RC, TMP1		// Check for missing parameters.
+    |  cmpld NARGS8:RC, TMP1		// Check for missing parameters.
     |  blt >3
     if (op == BC_JFUNCF) {
       |  decode_RD8 RD, INS
@@ -4998,7 +4261,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     }
     |
     |3:  // Clear missing parameters.
-    |  stwx TISNIL, BASE, NARGS8:RC
+    |  stdx TISNIL, BASE, NARGS8:RC
     |  addi NARGS8:RC, NARGS8:RC, 8
     |  b <2
     break;
@@ -5012,40 +4275,39 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
 
   case BC_IFUNCV:
     |  // BASE = new base, RA = BASE+framesize*8, RB = LFUNC, RC = nargs*8
-    |  lwz TMP2, L->maxstack
+    |  ld TMP2, L->maxstack
     |   add TMP1, BASE, RC
-    |  add TMP0, RA, RC
-    |   stw LFUNC:RB, 4(TMP1)		// Store copy of LFUNC.
-    |   addi TMP3, RC, 8+FRAME_VARG
-    |    lwz KBASE, -4+PC2PROTO(k)(PC)
-    |  cmplw TMP0, TMP2
-    |   stw TMP3, 0(TMP1)		// Store delta + FRAME_VARG.
+    |  add RA, RA, RC
+    |   std LFUNC:RB, 0(TMP1)		// Store (untagged) copy of LFUNC.
+    |   addi TMP3, RC, 16+FRAME_VARG
+    |    ld KBASE, -4+PC2PROTO(k)(PC)
+    |  cmpld RA, TMP2
+    |   std TMP3, 8(TMP1)		// Store delta + FRAME_VARG.
     |  bge ->vm_growstack_l
     |  lbz TMP2, -4+PC2PROTO(numparams)(PC)
     |   mr RA, BASE
     |   mr RC, TMP1
+    |   addi TMP1, TMP1, 16
     |  ins_next1
-    |  cmpwi TMP2, 0
-    |   addi BASE, TMP1, 8
+    |  cmpdi TMP2, 0
+    |   mr BASE, TMP1
     |  beq >3
     |1:
-    |  cmplw RA, RC			// Less args than parameters?
-    |   lwz TMP0, 0(RA)
-    |   lwz TMP3, 4(RA)
+    |  cmpld RA, RC			// Less args than parameters?
+    |   ld TMP0, 0(RA)
     |  bge >4
-    |    stw TISNIL, 0(RA)		// Clear old fixarg slot (help the GC).
+    |    std TISNIL, 0(RA)		// Clear old fixarg slot (help the GC).
     |    addi RA, RA, 8
     |2:
     |  addic. TMP2, TMP2, -1
-    |   stw TMP0, 8(TMP1)
-    |   stw TMP3, 12(TMP1)
+    |   std TMP0, 0(TMP1)
     |    addi TMP1, TMP1, 8
     |  bne <1
     |3:
     |  ins_next2
     |
     |4:  // Clear missing parameters.
-    |  li TMP0, LJ_TNIL
+    |  mr TMP0, TISNIL
     |  b <2
     break;
 
@@ -5053,40 +4315,33 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
   case BC_FUNCCW:
     |  // BASE = new base, RA = BASE+framesize*8, RB = CFUNC, RC = nargs*8
     if (op == BC_FUNCC) {
-      |  lp RD, CFUNC:RB->f
+      |  ld RD, CFUNC:RB->f
     } else {
-      |  lp RD, DISPATCH_GL(wrapf)(DISPATCH)
+      |  ld RD, DISPATCH_GL(wrapf)(DISPATCH)
     }
     |   add TMP1, RA, NARGS8:RC
-    |   lwz TMP2, L->maxstack
-    |  .toc lp TMP3, 0(RD)
+    |   ld TMP2, L->maxstack
     |    add RC, BASE, NARGS8:RC
-    |   stp BASE, L->base
-    |   cmplw TMP1, TMP2
-    |    stp RC, L->top
+    |   std BASE, L->base
+    |   cmpld TMP1, TMP2
+    |    std RC, L->top
     |     li_vmstate C
-    |.if TOC
-    |  mtctr TMP3
-    |.else
     |  mtctr RD
-    |.endif
     if (op == BC_FUNCCW) {
-      |  lp CARG2, CFUNC:RB->f
+      |  ld CARG2, CFUNC:RB->f
     }
     |  mr CARG1, L
     |   bgt ->vm_growstack_c		// Need to grow stack.
-    |  .toc lp TOCREG, TOC_OFS(RD)
-    |  .tocenv lp ENVREG, ENV_OFS(RD)
     |     st_vmstate
     |  bctrl				// (lua_State *L [, lua_CFunction f])
     |  // Returns nresults.
-    |  lp BASE, L->base
-    |  .toc ld TOCREG, SAVE_TOC
-    |   slwi RD, CRET1, 3
-    |  lp TMP1, L->top
+    |  ld BASE, L->base
+    |   ld TOCREG, SAVE_TOC
+    |   sldi RD, CRET1, 3
+    |  ld TMP1, L->top
     |    li_vmstate INTERP
-    |  lwz PC, FRAME_PC(BASE)		// Fetch PC of caller.
-    |    stw L, DISPATCH_GL(cur_L)(DISPATCH)
+    |  ld PC, FRAME_PC(BASE)		// Fetch PC of caller.
+    |    std L, DISPATCH_GL(cur_L)(DISPATCH)
     |   sub RA, TMP1, RD		// RA = L->top - nresults*8
     |    st_vmstate
     |  b ->vm_returnc
@@ -5120,77 +4375,76 @@ static int build_backend(BuildCtx *ctx)
 static void emit_asm_debug(BuildCtx *ctx)
 {
   int fcofs = (int)((uint8_t *)ctx->glob[GLOB_vm_ffi_call] - ctx->code);
-  int i;
+  int i, lr_offset = -16 >> 2;
   switch (ctx->mode) {
   case BUILD_elfasm:
     fprintf(ctx->fp, "\t.section .debug_frame,\"\",@progbits\n");
     fprintf(ctx->fp,
-	".Lframe0:\n"
-	"\t.long .LECIE0-.LSCIE0\n"
+	".Lframe0:\n"			/* Common Information Entry (CIE) */
+	"\t.long .LECIE0-.LSCIE0\n"	/* length */
 	".LSCIE0:\n"
-	"\t.long 0xffffffff\n"
-	"\t.byte 0x1\n"
-	"\t.string \"\"\n"
-	"\t.uleb128 0x1\n"
-	"\t.sleb128 -4\n"
-	"\t.byte 65\n"
-	"\t.byte 0xc\n\t.uleb128 1\n\t.uleb128 0\n"
+	"\t.long 0xffffffff\n"		/* CIE_Id */
+	"\t.byte 0x1\n"			/* Version */
+	"\t.string \"\"\n"		/* augmentation */
+	"\t.uleb128 0x1\n"		/* code_alignment_factor */
+	"\t.sleb128 -4\n"		/* data_alignment_factor */
+	"\t.byte 65\n"			/* return_address_register (LR) */
+	"\t.byte 0xc\n\t.uleb128 1\n\t.uleb128 0\n"	/* DW_CFA_def_cfa */
 	"\t.align 2\n"
 	".LECIE0:\n\n");
     fprintf(ctx->fp,
-	".LSFDE0:\n"
-	"\t.long .LEFDE0-.LASFDE0\n"
+	".LSFDE0:\n"			/* Frame Description Entry (FDE) */
+	"\t.long .LEFDE0-.LASFDE0\n"	/* length */
 	".LASFDE0:\n"
-	"\t.long .Lframe0\n"
-	"\t.long .Lbegin\n"
-	"\t.long %d\n"
-	"\t.byte 0xe\n\t.uleb128 %d\n"
-	"\t.byte 0x11\n\t.uleb128 65\n\t.sleb128 -1\n"
+	"\t.long .Lframe0\n"		/* CIE_ptr */
+	"\t.long .Lbegin\n"		/* initial_location */
+	"\t.long %d\n"			/* address_range */
+	"\t.byte 0xe\n\t.uleb128 %d\n"	/* DW_CFA_def_cfa_offset */
+	/* DW_CFA_offset_extended_sf */
+	"\t.byte 0x11\n\t.uleb128 65\n\t.sleb128 %d\n"
+	/* DW_CFA_offset_extended */
 	"\t.byte 0x5\n\t.uleb128 70\n\t.uleb128 55\n",
-	fcofs, CFRAME_SIZE);
+	fcofs, CFRAME_SIZE, lr_offset);
     for (i = 14; i <= 31; i++)
       fprintf(ctx->fp,
-	"\t.byte %d\n\t.uleb128 %d\n"
-	"\t.byte %d\n\t.uleb128 %d\n",
-	0x80+i, 37+(31-i), 0x80+32+i, 2+2*(31-i));
+	"\t.byte %d\n\t.uleb128 %d\n"	/* DW_CFA_offset from r14 to r31 */
+	"\t.byte %d\n\t.uleb128 %d\n",	/* DW_CFA_offset from f14 to f31 */
+	0x80+i, 38+2*(31-i), 0x80+32+i, 2+2*(31-i));
     fprintf(ctx->fp,
 	"\t.align 2\n"
 	".LEFDE0:\n\n");
 #if LJ_HASFFI
     fprintf(ctx->fp,
-	".LSFDE1:\n"
-	"\t.long .LEFDE1-.LASFDE1\n"
+	".LSFDE1:\n"			/* Frame Description Entry (FDE) */
+	"\t.long .LEFDE1-.LASFDE1\n"	/* length */
 	".LASFDE1:\n"
-	"\t.long .Lframe0\n"
-#if LJ_TARGET_PS3
-	"\t.long .lj_vm_ffi_call\n"
-#else
-	"\t.long lj_vm_ffi_call\n"
-#endif
-	"\t.long %d\n"
-	"\t.byte 0x11\n\t.uleb128 65\n\t.sleb128 -1\n"
-	"\t.byte 0x8e\n\t.uleb128 2\n"
-	"\t.byte 0xd\n\t.uleb128 0xe\n"
+	"\t.long .Lframe0\n"		/* CIE_ptr */
+	"\t.long lj_vm_ffi_call\n"	/* initial_location */
+	"\t.long %d\n"			/* address_range */
+	/* DW_CFA_offset_extended_sf */
+	"\t.byte 0x11\n\t.uleb128 65\n\t.sleb128 %d\n"
+	"\t.byte 0x8e\n\t.uleb128 2\n"	/* DW_CFA_offset */
+	"\t.byte 0xd\n\t.uleb128 0xe\n"	/* DW_CFA_def_cfa_register */
 	"\t.align 2\n"
-	".LEFDE1:\n\n", (int)ctx->codesz - fcofs);
+	".LEFDE1:\n\n", (int)ctx->codesz - fcofs, lr_offset);
 #endif
 #if !LJ_NO_UNWIND
     fprintf(ctx->fp, "\t.section .eh_frame,\"a\",@progbits\n");
     fprintf(ctx->fp,
 	".Lframe1:\n"
-	"\t.long .LECIE1-.LSCIE1\n"
-	".LSCIE1:\n"
-	"\t.long 0\n"
-	"\t.byte 0x1\n"
-	"\t.string \"zPR\"\n"
-	"\t.uleb128 0x1\n"
-	"\t.sleb128 -4\n"
-	"\t.byte 65\n"
+	"\t.long .LECIE1-.LSCIE1\n"	/* length */
+	".LSCIE1:\n"			/* Common Information Entry (CIE) */
+	"\t.long 0\n"			/* CIE_Id */
+	"\t.byte 0x1\n"			/* Version */
+	"\t.string \"zPR\"\n"		/* augmentation string */
+	"\t.uleb128 0x1\n"		/* code_alignment_factor */
+	"\t.sleb128 -4\n"		/* data_alignment_factor */
+	"\t.byte 65\n"			/* return_address_register (LR) */
 	"\t.uleb128 6\n"			/* augmentation length */
 	"\t.byte 0x1b\n"			/* pcrel|sdata4 */
 	"\t.long lj_err_unwind_dwarf-.\n"
 	"\t.byte 0x1b\n"			/* pcrel|sdata4 */
-	"\t.byte 0xc\n\t.uleb128 1\n\t.uleb128 0\n"
+	"\t.byte 0xc\n\t.uleb128 1\n\t.uleb128 0\n"	/* DW_CFA_def_cfa */
 	"\t.align 2\n"
 	".LECIE1:\n\n");
     fprintf(ctx->fp,
@@ -5201,15 +4455,17 @@ static void emit_asm_debug(BuildCtx *ctx)
 	"\t.long .Lbegin-.\n"
 	"\t.long %d\n"
 	"\t.uleb128 0\n"			/* augmentation length */
-	"\t.byte 0xe\n\t.uleb128 %d\n"
-	"\t.byte 0x11\n\t.uleb128 65\n\t.sleb128 -1\n"
+	"\t.byte 0xe\n\t.uleb128 %d\n"		/* DW_CFA_def_cfa_offset */
+	/* DW_CFA_offset_extended_sf */
+	"\t.byte 0x11\n\t.uleb128 65\n\t.sleb128 %d\n"
+	/* DW_CFA_offset_extended */
 	"\t.byte 0x5\n\t.uleb128 70\n\t.uleb128 55\n",
-	fcofs, CFRAME_SIZE);
+	fcofs, CFRAME_SIZE, lr_offset);
     for (i = 14; i <= 31; i++)
       fprintf(ctx->fp,
-	"\t.byte %d\n\t.uleb128 %d\n"
-	"\t.byte %d\n\t.uleb128 %d\n",
-	0x80+i, 37+(31-i), 0x80+32+i, 2+2*(31-i));
+	"\t.byte %d\n\t.uleb128 %d\n"	/* DW_CFA_offset from r14 to r31 */
+	"\t.byte %d\n\t.uleb128 %d\n",	/* DW_CFA_offset from f14 to f31 */
+	0x80+i, 38+2*(31-i), 0x80+32+i, 2+2*(31-i));
     fprintf(ctx->fp,
 	"\t.align 2\n"
 	".LEFDE2:\n\n");
@@ -5217,16 +4473,16 @@ static void emit_asm_debug(BuildCtx *ctx)
     fprintf(ctx->fp,
 	".Lframe2:\n"
 	"\t.long .LECIE2-.LSCIE2\n"
-	".LSCIE2:\n"
-	"\t.long 0\n"
-	"\t.byte 0x1\n"
-	"\t.string \"zR\"\n"
-	"\t.uleb128 0x1\n"
-	"\t.sleb128 -4\n"
-	"\t.byte 65\n"
+	".LSCIE2:\n"			/* Common Information Entry (CIE) */
+	"\t.long 0\n"			/* CIE_Id */
+	"\t.byte 0x1\n"			/* Version */
+	"\t.string \"zR\"\n"		/* augmentation string */
+	"\t.uleb128 0x1\n"		/* code_alignment_factor */
+	"\t.sleb128 -4\n"		/* data_alignment_factor */
+	"\t.byte 65\n"			/* return_address_register (LR) */
 	"\t.uleb128 1\n"			/* augmentation length */
 	"\t.byte 0x1b\n"			/* pcrel|sdata4 */
-	"\t.byte 0xc\n\t.uleb128 1\n\t.uleb128 0\n"
+	"\t.byte 0xc\n\t.uleb128 1\n\t.uleb128 0\n"	/* DW_CFA_def_cfa */
 	"\t.align 2\n"
 	".LECIE2:\n\n");
     fprintf(ctx->fp,
@@ -5237,11 +4493,12 @@ static void emit_asm_debug(BuildCtx *ctx)
 	"\t.long lj_vm_ffi_call-.\n"
 	"\t.long %d\n"
 	"\t.uleb128 0\n"			/* augmentation length */
-	"\t.byte 0x11\n\t.uleb128 65\n\t.sleb128 -1\n"
-	"\t.byte 0x8e\n\t.uleb128 2\n"
-	"\t.byte 0xd\n\t.uleb128 0xe\n"
+	/* DW_CFA_offset_extended_sf */
+	"\t.byte 0x11\n\t.uleb128 65\n\t.sleb128 %d\n"
+	"\t.byte 0x8e\n\t.uleb128 2\n"	/* DW_CFA_offset */
+	"\t.byte 0xd\n\t.uleb128 0xe\n"	/* DW_CFA_def_cfa_register */
 	"\t.align 2\n"
-	".LEFDE3:\n\n", (int)ctx->codesz - fcofs);
+	".LEFDE3:\n\n", (int)ctx->codesz - fcofs, lr_offset);
 #endif
 #endif
     break;

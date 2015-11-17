@@ -732,27 +732,27 @@ LJLIB_CF(ffi_abi)	LJLIB_REC(.)
   int b = 0;
   switch (s->hash) {
 #if LJ_64
-  case H_(4e599f79,1d9b9daa): b = 1; break;  /* 64bit */
+  case H_(849858eb,ad35fd06): b = 1; break;  /* 64bit */
 #else
-  case H_(db4ee6c1,a143ad71): b = 1; break;  /* 32bit */
+  case H_(662d3c79,d0e22477): b = 1; break;  /* 32bit */
 #endif
 #if LJ_ARCH_HASFPU
-  case H_(f6cf020e,f6cf020e): b = 1; break;  /* fpu */
+  case H_(e33ee463,e33ee463): b = 1; break;  /* fpu */
 #endif
 #if LJ_ABI_SOFTFP
-  case H_(3cbb6863,2cdff2d6): b = 1; break;  /* softfp */
+  case H_(61211a23,c2e8c81c): b = 1; break;  /* softfp */
 #else
-  case H_(2aa5a169,5eb84e86): b = 1; break;  /* hardfp */
+  case H_(539417a8,8ce0812f): b = 1; break;  /* hardfp */
 #endif
 #if LJ_ABI_EABI
-  case H_(79d873f0,484cfcc6): b = 1; break;  /* eabi */
+  case H_(2182df8f,f2ed1152): b = 1; break;  /* eabi */
 #endif
 #if LJ_ABI_WIN
-  case H_(cd672ef5,cd672ef5): b = 1; break;  /* win */
+  case H_(4ab624a8,4ab624a8): b = 1; break;  /* win */
 #endif
-  case H_(67d16e1a,5765ef45): b = 1; break;  /* le/be */
+  case H_(3af93066,1f001464): b = 1; break;  /* le/be */
 #if LJ_GC64
-  case H_(fed89f17,f32c8e26): b = 1; break;  /* gc64 */
+  case H_(9e89d2c9,13c83c92): b = 1; break;  /* gc64 */
 #endif
   default:
     break;
