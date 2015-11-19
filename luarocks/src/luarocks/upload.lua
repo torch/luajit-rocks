@@ -54,7 +54,7 @@ function upload.run(...)
    end
 
    local rock_fname
-   if not flags["skip-pack"] then
+   if not flags["skip-pack"] and not rockspec.version:match("^scm") then
       util.printout("Packing " .. tostring(rockspec.package))
       rock_fname, err = pack.pack_source_rock(fname)
       if not rock_fname then
@@ -77,7 +77,7 @@ function upload.run(...)
    
    if rock_fname then
       util.printout(("Sending " .. tostring(rock_fname) .. " ..."))
-      res, err = api:method("upload_rock/" .. tostring(res.version.id), nil, {
+      res, err = api:method("upload_rock/" .. ("%d"):format(res.version.id), nil, {
          rock_file = multipart.new_file(rock_fname)
       })
       if not res then return nil, err end

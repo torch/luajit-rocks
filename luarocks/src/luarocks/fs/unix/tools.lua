@@ -12,7 +12,7 @@ local dir_stack = {}
 local vars = cfg.variables
 
 local function command_at(directory, cmd)
-   return "cd " .. fs.Q(directory) .. " && " .. cmd
+   return "cd " .. fs.Q(fs.absolute_name(directory)) .. " && " .. cmd
 end
 
 --- Obtain current directory.
@@ -21,7 +21,7 @@ end
 function tools.current_dir()
    local current = cfg.cache_pwd
    if not current then
-      local pipe = io.popen(fs.Q(vars.PWD))
+      local pipe = io.popen(fs.Q(vars.PWD).." 2> /dev/null")
       current = pipe:read("*l")
       pipe:close()
       cfg.cache_pwd = current
@@ -38,7 +38,9 @@ end
 -- @return boolean: true if command succeeds (status code 0), false
 -- otherwise.
 function tools.execute_string(cmd)
-   local code, err = os.execute(command_at(fs.current_dir(), cmd))
+   local current = fs.current_dir()
+   if not current then return false end
+   local code, err = os.execute(command_at(current, cmd))
    if code == 0 or code == true then
       return true
    else
@@ -246,7 +248,7 @@ function tools.use_downloader(url, filename, cache)
 
    local ok
    if cfg.downloader == "wget" then
-      local wget_cmd = fs.Q(vars.WGET).." --no-check-certificate --no-cache --user-agent='"..cfg.user_agent.." via wget' --quiet "
+      local wget_cmd = fs.Q(vars.WGET).." "..vars.WGETNOCERTFLAG.." --no-cache --user-agent='"..cfg.user_agent.." via wget' --quiet "
       if cfg.connection_timeout and cfg.connection_timeout > 0 then
         wget_cmd = wget_cmd .. "--timeout="..tonumber(cfg.connection_timeout).." --tries=1 " 
       end
@@ -262,7 +264,7 @@ function tools.use_downloader(url, filename, cache)
          ok = fs.execute_quiet(wget_cmd, url)
       end
    elseif cfg.downloader == "curl" then
-      local curl_cmd = fs.Q(vars.CURL).." -f -k -L --user-agent '"..cfg.user_agent.." via curl' "
+      local curl_cmd = fs.Q(vars.CURL).." "..vars.CURLNOCERTFLAG.." -f -L --user-agent '"..cfg.user_agent.." via curl' "
       if cfg.connection_timeout and cfg.connection_timeout > 0 then
         curl_cmd = curl_cmd .. "--connect-timeout "..tonumber(cfg.connection_timeout).." " 
       end
@@ -281,12 +283,6 @@ function tools.chmod(pathname, mode)
    else
       return false
    end
-end
-
---- Apply a patch.
--- @param patchname string: The filename of the patch.
-function tools.apply_patch(patchname)
-   return fs.execute(vars.PATCH.." -p1 -f -i ", patchname)
 end
 
 --- Unpack an archive.
@@ -348,6 +344,11 @@ end
 
 function tools.browser(url)
    return fs.execute(cfg.web_browser, url)
+end
+
+function tools.set_time(file, time)
+   file = dir.normalize(file)
+   return fs.execute(vars.TOUCH, "-d", "@"..tostring(time), file)
 end
 
 return tools

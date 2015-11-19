@@ -1,22 +1,23 @@
-LuaRocks
-========
+<p align="center"><a href="http://luarocks.org"><img border="0" src="http://keplerproject.github.io/luarocks/luarocks.png" alt="LuaRocks" width="500px"></a></p>
 
 A package manager for Lua modules.
 
 [![Build Status](https://travis-ci.org/keplerproject/luarocks.png?branch=master)](https://travis-ci.org/keplerproject/luarocks)
+[![Build status](https://ci.appveyor.com/api/projects/status/4x4630tcf64da48i/branch/master?svg=true)](https://ci.appveyor.com/project/hishamhm/luarocks/branch/master)
+[![Coverage Status](https://coveralls.io/repos/keplerproject/luarocks/badge.svg?branch=master)](https://coveralls.io/r/keplerproject/luarocks?branch=master)
 
 Main website: [luarocks.org](http://www.luarocks.org)
 
 It allows you to install Lua modules as self-contained packages called
 [*rocks*][1], which also contain version [dependency][2] information. This
-information is used both during installation, so that when one rock is
-requested all rocks it depends on are installed as well, and at run time, so
-that when a module is required, the correct version is loaded. LuaRocks
-supports both local and [remote][3] repositories, and multiple local rocks
-trees. You can [download][4] and install LuaRocks on [Unix][5] and
+information can be used both during installation, so that when one rock is
+requested all rocks it depends on are installed as well, and also optionally
+at run time, so that when a module is required, the correct version is loaded.
+LuaRocks supports both local and [remote][3] repositories, and multiple local
+rocks trees. You can [download][4] and install LuaRocks on [Unix][5] and
 [Windows][6].
 
-LuaRocks is free software and uses the same [license][7] as Lua 5.1.
+LuaRocks is free software and uses the same [license][7] as Lua 5.x.
 
 [1]: http://luarocks.org/en/Types_of_rocks
 [2]: http://luarocks.org/en/Dependencies
