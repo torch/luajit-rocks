@@ -19,15 +19,14 @@ function File:mime()
       local mimetypes_ok, mimetypes = pcall(require, "mimetypes")
       if mimetypes_ok then
          self.mimetype = mimetypes.guess(self.fname)
-      else
-         self.mimetype = "application/octet-stream"
       end
+      self.mimetype = self.mimetype or "application/octet-stream"
    end
    return self.mimetype
 end
 
 function File:content()
-   local fd = io.open(self.fname)
+   local fd = io.open(self.fname, "rb")
    if not fd then
       return nil, "Failed to open file: "..self.fname
    end

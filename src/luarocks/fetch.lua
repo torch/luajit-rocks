@@ -37,11 +37,11 @@ function fetch.fetch_url(url, filename, cache)
    if protocol == "file" then
       return fs.absolute_name(pathname)
    elseif fetch.is_basic_protocol(protocol, true) then
-      local ok, filename = fs.download(url, filename, cache)
+      local ok, name = fs.download(url, filename, cache)
       if not ok then
          return nil, "Failed downloading "..url..(filename and " - "..filename or ""), "network"
       end
-      return filename
+      return name
    else
       return nil, "Unsupported protocol "..protocol
    end
@@ -170,8 +170,13 @@ function fetch.fetch_and_unpack_rock(rock_file, dest)
 end
 
 function fetch.url_to_base_dir(url)
+   -- for extensions like foo.tar.gz, "gz" is stripped first
+   local known_exts = {}
+   for _, ext in ipairs{"zip", "git", "tgz", "tar", "gz", "bz2"} do
+      known_exts[ext] = ""
+   end
    local base = dir.base_name(url)
-   return base:gsub("%.[^.]*$", ""):gsub("%.tar$", "")
+   return (base:gsub("%.([^.]*)$", known_exts):gsub("%.tar", ""))
 end
 
 --- Back-end function that actually loads the local rockspec.
@@ -193,9 +198,8 @@ function fetch.load_local_rockspec(filename, quick)
    end
    local globals = err
 
-   local ok, err = true, nil
    if not quick then
-      ok, err = type_check.type_check_rockspec(rockspec, globals)
+      local ok, err = type_check.type_check_rockspec(rockspec, globals)
       if not ok then
          return nil, filename..": "..err
       end
@@ -319,9 +323,10 @@ function fetch.get_sources(rockspec, extract, dest_dir)
    local url = rockspec.source.url
    local name = rockspec.name.."-"..rockspec.version
    local filename = rockspec.source.file
-   local source_file, store_dir, err, errcode
+   local source_file, store_dir
+   local ok, err, errcode
    if dest_dir then
-      local ok, err = fs.change_dir(dest_dir)
+      ok, err = fs.change_dir(dest_dir)
       if not ok then return nil, err, "dest_dir" end
       source_file, err, errcode = fetch.fetch_url(url, filename)
       fs.pop_dir()

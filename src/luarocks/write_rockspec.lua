@@ -24,18 +24,19 @@ If a repository URL is given with no version, it creates an 'scm' rock.
 Note that the generated file is a _starting point_ for writing a
 rockspec, and is not guaranteed to be complete or correct.
 
---output=<file>       Write the rockspec with the given filename.
-                      If not given, a file is written in the current
-                      directory with a filename based on given name and version.
---license="<string>"  A license string, such as "MIT/X11" or "GNU GPL v3".
---summary="<txt>"     A short one-line description summary.
---detailed="<txt>"    A longer description string.
---homepage=<url>      Project homepage.
---lua-version=<ver>   Supported Lua versions. Accepted values are "5.1", "5.2",
-                      "5.3", "5.1,5.2", "5.2,5.3", or "5.1,5.2,5.3".
---tag=<tag>           Tag to use. Will attempt to extract version number from it.
---lib=<lib>[,<lib>]   A comma-separated list of libraries that C files need to
-                      link to.
+--output=<file>          Write the rockspec with the given filename.
+                         If not given, a file is written in the current
+                         directory with a filename based on given name and version.
+--license="<string>"     A license string, such as "MIT/X11" or "GNU GPL v3".
+--summary="<txt>"        A short one-line description summary.
+--detailed="<txt>"       A longer description string.
+--homepage=<url>         Project homepage.
+--lua-version=<ver>      Supported Lua versions. Accepted values are "5.1", "5.2",
+                         "5.3", "5.1,5.2", "5.2,5.3", or "5.1,5.2,5.3".
+--rockspec-format=<ver>  Rockspec format version, such as "1.0" or "1.1".
+--tag=<tag>              Tag to use. Will attempt to extract version number from it.
+--lib=<lib>[,<lib>]      A comma-separated list of libraries that C files need to
+                         link to.
 ]]
 
 local function open_file(name)
@@ -76,25 +77,24 @@ local function configure_lua_version(rockspec, luaver)
    end
 end
 
-local function detect_description(rockspec)
+local function detect_description()
    local fd = open_file("README.md") or open_file("README")
    if not fd then return end
    local data = fd:read("*a")
    fd:close()
    local paragraph = data:match("\n\n([^%[].-)\n\n")
    if not paragraph then paragraph = data:match("\n\n(.*)") end
+   local summary, detailed
    if paragraph then
+      detailed = paragraph
+
       if #paragraph < 80 then
-         rockspec.description.summary = paragraph:gsub("\n", "")
-         rockspec.description.detailed = paragraph
+         summary = paragraph:gsub("\n", "")
       else
-         local summary = paragraph:gsub("\n", " "):match("([^.]*%.) ")
-         if summary then
-            rockspec.description.summary = summary:gsub("\n", "")
-         end
-         rockspec.description.detailed = paragraph
+         summary = paragraph:gsub("\n", " "):match("([^.]*%.) ")
       end
    end
+   return summary, detailed
 end
 
 local function detect_mit_license(data)
@@ -209,17 +209,13 @@ function write_rockspec.run(...)
    elseif not url_or_dir then
       url_or_dir = version
    end
-
-   if flags["tag"] == true then
-      return nil, "Incorrect usage: --tag requires an argument. "..util.see_help("write_rockspec")
-   end
    
    if flags["tag"] then
       if not version then
          version = flags["tag"]:gsub("^v", "")
       end
    end
-   
+
    local protocol, pathname = dir.split_url(url_or_dir)
    if not fetch.is_basic_protocol(protocol) then
       if not name then
@@ -251,6 +247,7 @@ function write_rockspec.run(...)
    end
 
    local rockspec = {
+      rockspec_format = flags["rockspec-format"],
       package = name,
       name = name:lower(),
       version = version.."-1",
@@ -316,7 +313,11 @@ function write_rockspec.run(...)
    local ok, err = fs.change_dir(local_dir)
    if not ok then return nil, "Failed reaching files from project - error entering directory "..local_dir end
 
-   detect_description(rockspec)
+   if (not flags["summary"]) or (not flags["detailed"]) then
+      local summary, detailed = detect_description()
+      rockspec.description.summary = flags["summary"] or summary
+      rockspec.description.detailed = flags["detailed"] or detailed
+   end
 
    local is_mit = show_license(rockspec)
    

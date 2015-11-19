@@ -40,7 +40,7 @@ system's package manager.
                             Default is \$PREFIX
 
 --lua-version=VERSION       Use specific Lua version: 5.1, 5.2, or 5.3
-                            Default is "$LUA_VERSION"
+                            Default is auto-detected.
 --lua-suffix=SUFFIX         Versioning suffix to use in Lua filenames.
                             Default is "$LUA_SUFFIX" (lua$LUA_SUFFIX...)
 --with-lua=PREFIX           Use Lua from given prefix.
@@ -71,26 +71,7 @@ EOF
 # Helper functions
 
 find_program() {
-   path="$PATH"
-   item="`echo "$path" | sed 's/\([^:]*\):.*/\1/'`"
-   path="`echo "$path" | sed -n 's/[^:]*::*\(.*\)/\1/p'`"
-   found="no"
-   while [ -n "$item" ]
-   do
-      if [ -f "$item/$1" ]
-      then
-         found="yes"
-         break
-      fi
-      item="`echo "$path" | sed 's/\([^:]*\):.*/\1/'`"
-      path="`echo "$path" | sed -n 's/[^:]*::*\(.*\)/\1/p'`"
-   done
-   if [ "$found" = "yes" ]
-   then
-      echo "$item"
-   else
-      echo ""
-   fi
+    command -v "$1" 2>/dev/null
 }
 
 die() {
@@ -177,7 +158,7 @@ do
       LUA_SUFFIX="$value"
       LUA_SUFFIX_SET=yes
       ;;
-   --lua-version)
+   --lua-version|--with-lua-version)
       [ -n "$value" ] || die "Missing value in flag $key."
       LUA_VERSION="$value"
       [ "$LUA_VERSION" = "5.1" -o "$LUA_VERSION" = "5.2" -o "$LUA_VERSION" = "5.3" ] || die "Invalid Lua version in flag $key."
@@ -250,13 +231,13 @@ detect_lua_version() {
          LUA_VERSION=$detected_lua
       elif [ "$LUA_VERSION" != "$detected_lua" ]
       then
-         die "This clashes with the value of --with-lua-version. Please check your configuration."
+         die "This clashes with the value of --lua-version. Please check your configuration."
       fi
    fi
 }
 
 search_interpreter() {
-   LUA_SUFFIX="$1"
+   suffix="$1"
    if [ "$LUA_BINDIR_SET" = "yes" ]
    then
       find_lua="$LUA_BINDIR"
@@ -269,10 +250,11 @@ search_interpreter() {
    else
       find_lua=`find_program lua$suffix`
    fi
-   if [ -n "$find_lua" ]
+   if [ -n "$find_lua" -a -x "$find_lua/lua$suffix" ]
    then
-      echo "Lua interpreter: $find_lua/lua$suffix..."
-      detect_lua_version "$find_lua/lua$suffix"
+      echo "Lua interpreter found: $find_lua/lua$suffix..."
+      LUA_SUFFIX=$suffix
+      detect_lua_version "$find_lua/lua$LUA_SUFFIX"
       return 0
    fi
    return 1
@@ -292,9 +274,13 @@ then
    else
       suffixes="5.3 53 -5.3 -53 5.2 52 -5.2 -52 5.1 51 -5.1 -51"
    fi
-   for suffix in `echo $suffixes` ""
+   lua_interp_found=no
+   for suffix in "" `echo $suffixes`
    do
-      search_interpreter "$suffix" && break
+      search_interpreter "$suffix" && {
+         lua_interp_found=yes
+         break
+      }
    done
 fi
 
@@ -313,7 +299,7 @@ then
       echo "lua$LUA_SUFFIX found in \$PATH: $find_lua"
    else
       echo "lua$LUA_SUFFIX not found in \$PATH."
-      die "You may want to use the flags --with-lua and/or --lua-suffix. See --help."
+      die "You may want to use the flags --with-lua, --with-lua-bin and/or --lua-suffix. See --help."
    fi
 fi
 
@@ -330,6 +316,18 @@ fi
 if [ "$LUA_DIR_SET" = "yes" -a "$LUA_BINDIR_SET" != "yes" ]
 then
    LUA_BINDIR="$LUA_DIR/bin"
+fi
+
+if [ "$lua_interp_found" != "yes" ]
+then
+   echo_n "Checking Lua interpreter... "
+   if [ -x "$LUA_BINDIR/lua$LUA_SUFFIX" ]
+   then
+      echo "lua$LUA_SUFFIX found in $LUA_BINDIR"
+   else
+      echo "lua$LUA_SUFFIX not found (looked in $LUA_BINDIR)"
+      die "You may want to use the flag --with-lua or --with-lua-bin. See --help."
+   fi
 fi
 
 echo_n "Checking Lua includes... "
@@ -419,6 +417,10 @@ then
    if [ -n "$GCC_ARCH" -a -d "/usr/lib/$GCC_ARCH" ]
    then
       MULTIARCH_SUBDIR="lib/$GCC_ARCH"
+   elif [ -d "/usr/lib64" ]
+   then
+      # Useful for Fedora systems
+      MULTIARCH_SUBDIR="lib64"
    fi
 fi
 
