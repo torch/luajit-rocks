@@ -17,26 +17,29 @@ dpkg-genchanges: including full source code in upload
  dpkg-source --after-build luajit-rocks-1.0.2
 dpkg-buildpackage: source only upload: Debian-native package
  -> Copying COW directory
-  forking: rm -rf /var/cache/pbuilder/build//cow.15917 
-  forking: cp -al /var/cache/pbuilder/base-trusty.cow /var/cache/pbuilder/build//cow.15917 
-I: unlink for ilistfile /var/cache/pbuilder/build//cow.15917/.ilist failed, it didn't exist?
-  forking: chroot /var/cache/pbuilder/build//cow.15917 cowdancer-ilistcreate /.ilist find . -xdev -path ./home -prune -o \( \( -type l -o -type f \) -a -links +1 -print0 \) | xargs -0 stat --format '%d %i ' 
+  forking: rm -rf /var/cache/pbuilder/build//cow.20740 
+  forking: cp -al /var/cache/pbuilder/base-trusty.cow /var/cache/pbuilder/build//cow.20740 
+I: unlink for ilistfile /var/cache/pbuilder/build//cow.20740/.ilist failed, it didn't exist?
+  forking: chroot /var/cache/pbuilder/build//cow.20740 cowdancer-ilistcreate /.ilist find . -xdev -path ./home -prune -o \( \( -type l -o -type f \) -a -links +1 -print0 \) | xargs -0 stat --format '%d %i ' 
  -> Invoking pbuilder
-  forking: pbuilder build --debbuildopts  --debbuildopts  --buildplace /var/cache/pbuilder/build//cow.15917 --buildresult /home/bfomitchev/git/luajit-rocks/export --debbuildopts  --no-targz --internal-chrootexec chroot /var/cache/pbuilder/build//cow.15917 cow-shell /home/bfomitchev/git/luajit-rocks/export/luajit-rocks_1.0.2.dsc 
+  forking: pbuilder build --debbuildopts  --debbuildopts  --buildplace /var/cache/pbuilder/build//cow.20740 --buildresult /home/bfomitchev/git/luajit-rocks/export --debbuildopts  --no-targz --internal-chrootexec chroot /var/cache/pbuilder/build//cow.20740 cow-shell /home/bfomitchev/git/luajit-rocks/export/luajit-rocks_1.0.2.dsc 
 W: /home/bfomitchev/.pbuilderrc does not exist
 I: Running in no-targz mode
 I: using fakeroot in build.
-I: Current time: Thu Nov 19 22:39:11 PST 2015
-I: pbuilder-time-stamp: 1448001551
+I: Current time: Mon Nov 23 13:55:48 PST 2015
+I: pbuilder-time-stamp: 1448315748
 I: copying local configuration
 I: mounting /proc filesystem
 I: mounting /run/shm filesystem
 I: mounting /dev/pts filesystem
+I: Mounting /usr/local/mydebs
 I: policy-rc.d already exists
 I: Obtaining the cached apt archive contents
 I: Installing the build-deps
 W: execute priv not set on file D40-speedup-hacks, not executing.
 W: execute priv not set on file D50-setup-cow-apt, not executing.
+W: execute priv not set on file D50deps, not executing.
+W: skipping an editor backup file /var/cache/pbuilder/build/cow.20740/tmp/hooks/D50deps~
  -> Attempting to satisfy build-dependencies
  -> Creating pbuilder-satisfydepends-dummy package
 Package: pbuilder-satisfydepends-dummy
@@ -344,25 +347,39 @@ Reading package lists...
 Building dependency tree...
 Reading state information...
 The following extra packages will be installed:
-  libfakeroot
+  libapt-inst1.5 libfakeroot
 The following NEW packages will be installed:
-  fakeroot libfakeroot
+  apt-utils fakeroot libapt-inst1.5 libfakeroot
+0 upgraded, 4 newly installed, 0 to remove and 0 not upgraded.
+Need to get 230 kB/311 kB of archives.
+After this operation, 1851 kB of additional disk space will be used.
+Get:1 http://nl.archive.ubuntu.com/ubuntu/ trusty/main libapt-inst1.5 amd64 1.0.1ubuntu2 [58.6 kB]
+Get:2 http://nl.archive.ubuntu.com/ubuntu/ trusty/main apt-utils amd64 1.0.1ubuntu2 [172 kB]
 debconf: delaying package configuration, since apt-utils is not installed
-0 upgraded, 2 newly installed, 0 to remove and 0 not upgraded.
-Need to get 0 B/80.4 kB of archives.
-After this operation, 415 kB of additional disk space will be used.
-Selecting previously unselected package libfakeroot:amd64.
+Fetched 230 kB in 1s (172 kB/s)
+Selecting previously unselected package libapt-inst1.5:amd64.
 (Reading database ... 14848 files and directories currently installed.)
+Preparing to unpack .../libapt-inst1.5_1.0.1ubuntu2_amd64.deb ...
+Unpacking libapt-inst1.5:amd64 (1.0.1ubuntu2) ...
+Selecting previously unselected package apt-utils.
+Preparing to unpack .../apt-utils_1.0.1ubuntu2_amd64.deb ...
+Unpacking apt-utils (1.0.1ubuntu2) ...
+Selecting previously unselected package libfakeroot:amd64.
 Preparing to unpack .../libfakeroot_1.20-3ubuntu2_amd64.deb ...
 Unpacking libfakeroot:amd64 (1.20-3ubuntu2) ...
 Selecting previously unselected package fakeroot.
 Preparing to unpack .../fakeroot_1.20-3ubuntu2_amd64.deb ...
 Unpacking fakeroot (1.20-3ubuntu2) ...
 Processing triggers for man-db (2.6.7.1-1) ...
+Setting up libapt-inst1.5:amd64 (1.0.1ubuntu2) ...
+Setting up apt-utils (1.0.1ubuntu2) ...
 Setting up libfakeroot:amd64 (1.20-3ubuntu2) ...
 Setting up fakeroot (1.20-3ubuntu2) ...
 update-alternatives: using /usr/bin/fakeroot-sysv to provide /usr/bin/fakeroot (fakeroot) in auto mode
+Processing triggers for libc-bin (2.19-0ubuntu6) ...
 I: Copying back the cached apt archive contents
+I: new cache content apt-utils_1.0.1ubuntu2_amd64.deb added
+I: new cache content libapt-inst1.5_1.0.1ubuntu2_amd64.deb added
 I: Copying source file
 I: copying [/home/bfomitchev/git/luajit-rocks/export/luajit-rocks_1.0.2.dsc]
 I: copying [/home/bfomitchev/git/luajit-rocks/export/luajit-rocks_1.0.2.tar.gz]
@@ -527,10 +544,11 @@ dpkg-genchanges: including full source code in upload
 dpkg-buildpackage: full upload; Debian-native package (full source is included)
 W: no hooks of type B found -- ignoring
 I: Copying back the cached apt archive contents
+I: unmounting /usr/local/mydebs filesystem
 I: unmounting dev/pts filesystem
 I: unmounting run/shm filesystem
 I: unmounting proc filesystem
-I: Current time: Thu Nov 19 22:39:26 PST 2015
-I: pbuilder-time-stamp: 1448001566
+I: Current time: Mon Nov 23 13:56:05 PST 2015
+I: pbuilder-time-stamp: 1448315765
  -> Cleaning COW directory
-  forking: rm -rf /var/cache/pbuilder/build//cow.15917 
+  forking: rm -rf /var/cache/pbuilder/build//cow.20740 
