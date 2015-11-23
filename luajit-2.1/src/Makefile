@@ -34,7 +34,7 @@ CC= gcc
 # to slow down the C part by not omitting it. Debugging, tracebacks and
 # unwinding are not affected -- the assembler part has frame unwind
 # information and GCC emits it where needed (x64) or with -g (see CCDEBUG).
-CCOPT= -O0 -fomit-frame-pointer
+CCOPT= -O2 -fomit-frame-pointer
 # Use this if you want to generate a smaller binary (but it's slower):
 #CCOPT= -Os -fomit-frame-pointer
 # Note: it's no longer recommended to use -O3 with GCC 4.x.
@@ -52,7 +52,7 @@ CCOPT_arm64=
 CCOPT_ppc=
 CCOPT_mips=
 #
-CCDEBUG= -g3
+CCDEBUG=
 # Uncomment the next line to generate debug information:
 #CCDEBUG= -g
 #
@@ -492,9 +492,6 @@ ALL_GEN= $(LJVM_S) $(ALL_HDRGEN) $(LIB_VMDEFP)
 WIN_RM= *.obj *.lib *.exp *.dll *.exe *.manifest *.pdb *.ilk
 ALL_RM= $(ALL_T) $(ALL_GEN) *.o host/*.o $(WIN_RM)
 
-LIB_FFI_TEST=../tests/lib/libffi-test.so ../tests/lib/libffi-test.so.1
-FFI_TEST=../tests/remote_ffi_call_fixed_args
-
 ##############################################################################
 # Build mode handling.
 ##############################################################################
@@ -578,27 +575,14 @@ E= @echo
 # Make targets.
 ##############################################################################
 
-default all: $(TARGET_T) $(LIB_FFI_TEST) $(FFI_TEST)
-
-$(LIB_FFI_TEST): ../tests/lib/ffi-test.c
-	cd ../tests/lib && \
-		$(CC) -fPIC -shared -Wl,-rpath=lib,-soname,libffi-test.so.1 -o libffi-test.so.1 ffi-test.c && \
-		ln -fs libffi-test.so.1 libffi-test.so
-ifneq (,$(findstring LJ_32 1,$(TARGET_TESTARCH)))
-	# needed on 32 bits, or else "cannot restore segment prot after reloc: Permission denied" when run
-	# http://www.cubrid.org/wiki_tutorials/entry/cannot-restore-segment-prot-after-reloc-permission-denied
-	chcon -t texrel_shlib_t ../tests/lib/libffi-test.so.1
-endif
-
-$(FFI_TEST): $(FFI_TEST).c ../tests/lib/libffi-test.so
-	$(CC) $(FFI_TEST).c -o $(FFI_TEST) -L../tests/lib/ -lffi-test
+default all:	$(TARGET_T)
 
 amalg:
 	@grep "^[+|]" ljamalg.c
 	$(MAKE) all "LJCORE_O=ljamalg.o"
 
 clean:
-	$(HOST_RM) $(ALL_RM) $(LIB_FFI_TEST) $(FFI_TEST)
+	$(HOST_RM) $(ALL_RM)
 
 libbc:
 	./$(LUAJIT_T) host/genlibbc.lua -o host/buildvm_libbc.h $(LJLIB_C)

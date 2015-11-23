@@ -1723,21 +1723,6 @@ op_template = function(params, template, nparams)
       v = parse_imm(params[n], 6, 0, 0, false);
       op = op + shl(band(v,31), 11)+shl(shr(v,5), 1);
       n = n + 1;
-      --op = op + parse_shiftmask(params[n], true); n = n + 1
-    elseif p == "L" then
-      v = tonumber(params[n]);
-      z = 63 - v;
-      op = op + shl(band(v,31), 11)+shl(shr(v,5), 1);
-      msb = shr(band(z,32),5);
-      r = shl(band(z,31),1);
-      op = op + shl((msb + r), 5); n = n + 1;
-    elseif p == "u" then
-      v = tonumber(params[n]);
-      z = 64 - v;
-      op = op + shl(band(z,31), 11)+shl(shr(z,5), 1);
-      msb = shr(band(v,32),5);
-      r = shl(band(v,31),1);
-      op = op + shl((msb + r), 5); n = n + 1;
     elseif p == "f" then
       v = tonumber(params[n]);
       op = op + shl(band(v,31), 11)+shl(shr(v,5), 1);
