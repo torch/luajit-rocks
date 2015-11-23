@@ -100,7 +100,6 @@ static ptrdiff_t results_wanted(jit_State *J)
 static void recff_stitch(jit_State *J)
 {
   ASMFunction cont = lj_cont_stitch;
-  TraceNo traceno = J->cur.traceno;
   lua_State *L = J->L;
   TValue *base = L->base;
   const BCIns *pc = frame_pc(base-1);
@@ -113,7 +112,7 @@ static void recff_stitch(jit_State *J)
   setframe_ftsz(base+1, ((char *)(base+1) - (char *)pframe) + FRAME_CONT);
   setcont(base, cont);
   setframe_pc(base, pc);
-  if (LJ_DUALNUM) setintV(base-1, traceno); else base[-1].u64 = traceno;
+  setnilV(base-1);  /* Incorrect, but rec_check_slots() won't run anymore. */
   L->base += 2;
   L->top += 2;
 
@@ -125,7 +124,9 @@ static void recff_stitch(jit_State *J)
   trcont = lj_ir_kptr(J, (void *)cont);
 #endif
   J->base[0] = trcont | TREF_CONT;
-  J->base[-1] = LJ_DUALNUM ? lj_ir_kint(J,traceno) : lj_ir_knum_u64(J,traceno);
+  J->ktracep = lj_ir_k64_reserve(J);
+  lua_assert(irt_toitype_(IRT_P64) == LJ_TTRACE);
+  J->base[-1] = emitir(IRT(IR_XLOAD, IRT_P64), lj_ir_kptr(J, &J->ktracep->gcr), 0);
   J->base += 2;
   J->baseslot += 2;
   J->framedepth++;
@@ -434,11 +435,12 @@ static void LJ_FASTCALL recff_ipairs_aux(jit_State *J, RecordFFData *rd)
 
 static void LJ_FASTCALL recff_xpairs(jit_State *J, RecordFFData *rd)
 {
-  if (!(LJ_52 && recff_metacall(J, rd, MM_ipairs))) {
-    TRef tab = J->base[0];
-    if (tref_istab(tab)) {
+  TRef tr = J->base[0];
+  if (!((LJ_52 || (LJ_HASFFI && tref_iscdata(tr))) &&
+	recff_metacall(J, rd, MM_pairs + rd->data))) {
+    if (tref_istab(tr)) {
       J->base[0] = lj_ir_kfunc(J, funcV(&J->fn->c.upvalue[0]));
-      J->base[1] = tab;
+      J->base[1] = tr;
       J->base[2] = rd->data ? lj_ir_kint(J, 0) : TREF_NIL;
       rd->nres = 3;
     }  /* else: Interpreter will throw. */

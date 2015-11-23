@@ -117,15 +117,22 @@ static void perftools_addtrace(GCtrace *T)
 }
 #endif
 
-/* Save current trace by copying and compacting it. */
-static void trace_save(jit_State *J)
+/* Allocate space for copy of trace. */
+static GCtrace *trace_save_alloc(jit_State *J)
 {
   size_t sztr = ((sizeof(GCtrace)+7)&~7);
   size_t szins = (J->cur.nins-J->cur.nk)*sizeof(IRIns);
   size_t sz = sztr + szins +
 	      J->cur.nsnap*sizeof(SnapShot) +
 	      J->cur.nsnapmap*sizeof(SnapEntry);
-  GCtrace *T = lj_mem_newt(J->L, (MSize)sz, GCtrace);
+  return lj_mem_newt(J->L, (MSize)sz, GCtrace);
+}
+
+/* Save current trace by copying and compacting it. */
+static void trace_save(jit_State *J, GCtrace *T)
+{
+  size_t sztr = ((sizeof(GCtrace)+7)&~7);
+  size_t szins = (J->cur.nins-J->cur.nk)*sizeof(IRIns);
   char *p = (char *)T + sztr;
   memcpy(T, &J->cur, sizeof(GCtrace));
   setgcrefr(T->nextgc, J2G(J)->gc.root);
@@ -267,7 +274,7 @@ int lj_trace_flushall(lua_State *L)
       if (T->root == 0)
 	trace_flushroot(J, T);
       lj_gdbjit_deltrace(J, T);
-      T->traceno = 0;
+      T->traceno = T->link = 0;  /* Blacklist the link for cont_stitch. */
       setgcrefnull(J->trace[i]);
     }
   }
@@ -277,6 +284,7 @@ int lj_trace_flushall(lua_State *L)
   memset(J->penalty, 0, sizeof(J->penalty));
   /* Free the whole machine code and invalidate all exit stub groups. */
   lj_mcode_free(J);
+  lj_ir_k64_freeall(J);
   memset(J->exitstubgroup, 0, sizeof(J->exitstubgroup));
   lj_vmevent_send(L, TRACE,
     setstrV(L, L->top++, lj_str_newlit(L, "flush"));
@@ -394,6 +402,8 @@ static void trace_start(jit_State *J)
   J->guardemit.irt = 0;
   J->postproc = LJ_POST_NONE;
   lj_resetsplit(J);
+  J->retryrec = 0;
+  J->ktracep = NULL;
   setgcref(J->cur.startpt, obj2gco(J->pt));
 
   L = J->L;
@@ -417,6 +427,7 @@ static void trace_stop(jit_State *J)
   BCOp op = bc_op(J->cur.startins);
   GCproto *pt = &gcref(J->cur.startpt)->pt;
   TraceNo traceno = J->cur.traceno;
+  GCtrace *T = trace_save_alloc(J);  /* Do this first. May throw OOM. */
   lua_State *L;
 
   switch (op) {
@@ -467,7 +478,10 @@ static void trace_stop(jit_State *J)
   /* Commit new mcode only after all patching is done. */
   lj_mcode_commit(J, J->cur.mcode);
   J->postproc = LJ_POST_NONE;
-  trace_save(J);
+  trace_save(J, T);
+  if (J->ktracep) {  /* Patch K64Array slot with the final GCtrace pointer. */
+    setgcV(J->L, J->ktracep, obj2gco(T), LJ_TTRACE);
+  }
 
   L = J->L;
   lj_vmevent_send(L, TRACE,
@@ -510,10 +524,15 @@ static int trace_abort(jit_State *J)
   }
   /* Penalize or blacklist starting bytecode instruction. */
   if (J->parent == 0 && !bc_isret(bc_op(J->cur.startins))) {
-    if (J->exitno == 0)
-      penalty_pc(J, &gcref(J->cur.startpt)->pt, mref(J->cur.startpc, BCIns), e);
-    else
+    if (J->exitno == 0) {
+      BCIns *startpc = mref(J->cur.startpc, BCIns);
+      if (e == LJ_TRERR_RETRY)
+	hotcount_set(J2GG(J), startpc+1, 1);  /* Immediate retry. */
+      else
+	penalty_pc(J, &gcref(J->cur.startpt)->pt, startpc, e);
+    } else {
       traceref(J, J->exitno)->link = J->exitno;  /* Self-link is blacklisted. */
+    }
   }
 
   /* Is there anything to abort? */
