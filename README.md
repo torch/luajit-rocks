@@ -33,23 +33,42 @@ is free, it has no GUI, but it is just fine with CMake.
 
 # Installation
 
+On Windows - use command prompt with appropritate environment (e.g. VS2013 Native Tools Command Prompt)
+
 ```sh
-git clone https://github.com/torch/luajit-rocks.git
+git clone https://github.com/diz-vara/luajit-rocks.git
 cd luajit-rocks
 mkdir build
 cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=/your/prefix
 ```
+Choose the destination - (e.g. d:/luainstall) - it will be '/your/prefix'
 
 Then under Unix systems:
 ```sh
+cmake .. -DCMAKE_INSTALL_PREFIX=/your/prefix
 make install
 ```
 
 Under Windows:
 ```sh
-nmake install
+cmake .. -DCMAKE_INSTALL_PREFIX=/your/prefix -DWITH_LUAJIT21=ON -G "NMake Makefiles"  -DWIN32=1
+nmake
+cmake  -DCMAKE_INSTALL_PREFIX=/your/prefix -DWITH_LUAJIT21=ON -G "NMake Makefiles"  -DWIN32=1 -P cmake_install.cmake
 ```
+
+Under Windows - remember to update your environment variables. Assuming that your/prefix is d:/luainstall :
+```sh
+set LUA_CPATH=d:\luainstall?.DLL;d:\luainstall\LIB\?.DLL;?.DLL
+set LUA_DEV=d:/luainstall
+set LUA_PATH=;;d:\luainstall\?;d:\luainstall\lua\?\init.lua;d:\luainstall\?.lua
+```
+
+Then install packages you need:
+luarocks install torch
+luarocks install nn
+luarocks install nnx
+etc...
+
 
 Note: we do not recommend (nor we support) installation under Cygwin.
 

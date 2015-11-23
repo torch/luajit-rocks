@@ -9,6 +9,22 @@
 #ifndef lua_h
 #define lua_h
 
+#ifdef WIN32
+# ifndef LUA_WIN
+#  define LUA_WIN
+# endif
+# ifndef _WIN32
+#  define _WIN32
+# endif
+
+# if !defined LUA_LIB & !defined LUA_CORE & !defined luajit_c  &  !defined _LJ_ARCH_H &  !defined _LJ_DEF_H & !defined _LJ_OBJ_H
+#  pragma comment( lib, "libluajit.lib") 
+# endif
+
+#endif
+
+
+
 #include <stdarg.h>
 #include <stddef.h>
 

@@ -9,6 +9,17 @@
 #ifndef lua_h
 #define lua_h
 
+#ifdef WIN32
+# ifndef LUA_WIN
+#  define LUA_WIN
+# endif
+# ifndef _WIN32
+#  define _WIN32
+# endif
+#endif
+
+
+
 #include <stdarg.h>
 #include <stddef.h>
 

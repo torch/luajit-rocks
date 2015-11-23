@@ -18,6 +18,9 @@
 ** In Windows, any exclamation mark ('!') in the path is replaced by the
 ** path of the directory of the executable file of the current process.
 */
+
+#define LUA_BUILD_AS_DLL 1
+
 #define LUA_LDIR	"!\\lua\\"
 #define LUA_CDIR	"!\\"
 #define LUA_PATH_DEFAULT \
@@ -135,7 +138,7 @@
 #define LUA_API		__declspec(dllimport)
 #endif
 #else
-#define LUA_API		extern
+#define LUA_API		extern "C"
 #endif
 
 #define LUALIB_API	LUA_API
