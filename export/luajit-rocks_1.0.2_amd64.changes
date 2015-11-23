@@ -15,14 +15,14 @@ Changes:
  .
    * Minor updates to the package
 Checksums-Sha1: 
- dc6d229b5dab5e7430d88dbe8eb5fb79ad28f056 677 luajit-rocks_1.0.2.dsc
- f13a2281d7bb84a756485dbfc6dc96f8ac21ab40 12104672 luajit-rocks_1.0.2.tar.gz
- 863c41dd8d99c647b18143db91889fe97b56b863 84718 luajit-rocks_1.0.2_all.deb
+ 88c57ff27f5e4f83001055511ed0ce1c67b7218f 677 luajit-rocks_1.0.2.dsc
+ bf22c3a05a9b3a7954952e17f72046ad42c2ba5d 16174702 luajit-rocks_1.0.2.tar.gz
+ 1ff09522300a6a0fe89cc5ed82e4ffd7af330cf4 84710 luajit-rocks_1.0.2_all.deb
 Checksums-Sha256: 
- a77e36038980bcbe577f847c225ee8a885f8cf36aec25c3e659b3ede933b42b2 677 luajit-rocks_1.0.2.dsc
- 087e9addd0f1ecf3bf4c509c641b9914035d682761677b41e140db278e40d672 12104672 luajit-rocks_1.0.2.tar.gz
- deb3bdb69697e6eaff5205b67c9f3b756f25ad921ad1fa47a6df302af686f2e8 84718 luajit-rocks_1.0.2_all.deb
+ d9b0ae895eeff8fe95f5f371dc1ee54a0aa6b81140e661a94b11b0b9b7adc09a 677 luajit-rocks_1.0.2.dsc
+ 13b5ea64563e2eb34e3ae38aa730c66774e49ab895bba504704d15a2b0f3c847 16174702 luajit-rocks_1.0.2.tar.gz
+ 82d10888ac1a7d9e81617b4664f58544ea6562bef06225bd83f80aa36c9a2f40 84710 luajit-rocks_1.0.2_all.deb
 Files: 
- 6c6bab0d74de717d03839a8c489211e6 677 universe/interpreters optional luajit-rocks_1.0.2.dsc
- df646914644811b9f0677dbb68797405 12104672 universe/interpreters optional luajit-rocks_1.0.2.tar.gz
- f9ab78672a1a5e9a070ac9e0fe5dcd74 84718 universe/interpreters optional luajit-rocks_1.0.2_all.deb
+ 909cad851fccde09f09053ab8278037c 677 universe/interpreters optional luajit-rocks_1.0.2.dsc
+ 874bc438e94c7f8895e7cdbf41594413 16174702 universe/interpreters optional luajit-rocks_1.0.2.tar.gz
+ e08873cdcda8e76fdc59eb82cdc14c0e 84710 universe/interpreters optional luajit-rocks_1.0.2_all.deb
