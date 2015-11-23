@@ -11,8 +11,8 @@ Build-Depends: debhelper (>= 9), cmake, git-core, luajit, wget, zip
 Package-List: 
  luajit-rocks deb universe/interpreters optional
 Checksums-Sha1: 
- d39a0364995dfe4dc413ee3e684e5ac60e33ef89 20247593 luajit-rocks_1.0.3.tar.gz
+ ea9dcb00f03a7db378b62ff637240caa061fbf0c 24322616 luajit-rocks_1.0.3.tar.gz
 Checksums-Sha256: 
- d892120c1d383a1e8cf518437d5a3dbbe1d3e2673f9eade4a4720123a60569c2 20247593 luajit-rocks_1.0.3.tar.gz
+ 6ba10adb4121e8904d7b2122f980d6ac8b7e9213bf0270ee540a9cc60b73fa17 24322616 luajit-rocks_1.0.3.tar.gz
 Files: 
- 0cd7fc31ffccffc428b777c5a588021b 20247593 luajit-rocks_1.0.3.tar.gz
+ a70478e5e657ad6da3fb6b1f3af8b76f 24322616 luajit-rocks_1.0.3.tar.gz

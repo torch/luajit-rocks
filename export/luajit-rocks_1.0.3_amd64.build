@@ -1,6 +1,6 @@
 dpkg-buildpackage: source package luajit-rocks
 dpkg-buildpackage: source version 1.0.3
-dpkg-buildpackage: source distribution UNRELEASED
+dpkg-buildpackage: source distribution trusty
 dpkg-buildpackage: source changed by Boris Fomitchev <bfomitchev@nvidia.com>
  dpkg-source --before-build luajit-rocks-1.0.3
  fakeroot debian/rules clean
@@ -17,17 +17,17 @@ dpkg-genchanges: including full source code in upload
  dpkg-source --after-build luajit-rocks-1.0.3
 dpkg-buildpackage: source only upload: Debian-native package
  -> Copying COW directory
-  forking: rm -rf /var/cache/pbuilder/build//cow.12842 
-  forking: cp -al /var/cache/pbuilder/base-trusty.cow /var/cache/pbuilder/build//cow.12842 
-I: unlink for ilistfile /var/cache/pbuilder/build//cow.12842/.ilist failed, it didn't exist?
-  forking: chroot /var/cache/pbuilder/build//cow.12842 cowdancer-ilistcreate /.ilist find . -xdev -path ./home -prune -o \( \( -type l -o -type f \) -a -links +1 -print0 \) | xargs -0 stat --format '%d %i ' 
+  forking: rm -rf /var/cache/pbuilder/build//cow.24325 
+  forking: cp -al /var/cache/pbuilder/base-trusty.cow /var/cache/pbuilder/build//cow.24325 
+I: unlink for ilistfile /var/cache/pbuilder/build//cow.24325/.ilist failed, it didn't exist?
+  forking: chroot /var/cache/pbuilder/build//cow.24325 cowdancer-ilistcreate /.ilist find . -xdev -path ./home -prune -o \( \( -type l -o -type f \) -a -links +1 -print0 \) | xargs -0 stat --format '%d %i ' 
  -> Invoking pbuilder
-  forking: pbuilder build --debbuildopts  --debbuildopts  --buildplace /var/cache/pbuilder/build//cow.12842 --buildresult /home/bfomitchev/git/luajit-rocks/export --debbuildopts  --no-targz --internal-chrootexec chroot /var/cache/pbuilder/build//cow.12842 cow-shell /home/bfomitchev/git/luajit-rocks/export/luajit-rocks_1.0.3.dsc 
+  forking: pbuilder build --debbuildopts  --debbuildopts  --buildplace /var/cache/pbuilder/build//cow.24325 --buildresult /home/bfomitchev/git/luajit-rocks/export --debbuildopts  --no-targz --internal-chrootexec chroot /var/cache/pbuilder/build//cow.24325 cow-shell /home/bfomitchev/git/luajit-rocks/export/luajit-rocks_1.0.3.dsc 
 W: /home/bfomitchev/.pbuilderrc does not exist
 I: Running in no-targz mode
 I: using fakeroot in build.
-I: Current time: Mon Nov 23 14:30:21 PST 2015
-I: pbuilder-time-stamp: 1448317821
+I: Current time: Mon Nov 23 14:42:15 PST 2015
+I: pbuilder-time-stamp: 1448318535
 I: copying local configuration
 I: mounting /proc filesystem
 I: mounting /run/shm filesystem
@@ -39,7 +39,7 @@ I: Installing the build-deps
 W: execute priv not set on file D40-speedup-hacks, not executing.
 W: execute priv not set on file D50-setup-cow-apt, not executing.
 W: execute priv not set on file D50deps, not executing.
-W: skipping an editor backup file /var/cache/pbuilder/build/cow.12842/tmp/hooks/D50deps~
+W: skipping an editor backup file /var/cache/pbuilder/build/cow.24325/tmp/hooks/D50deps~
  -> Attempting to satisfy build-dependencies
  -> Creating pbuilder-satisfydepends-dummy package
 Package: pbuilder-satisfydepends-dummy
@@ -387,7 +387,7 @@ W: no hooks of type A found -- ignoring
 I: Running cd tmp/buildd/*/ && env PATH="/usr/sbin:/usr/bin:/sbin:/bin" dpkg-buildpackage -us -uc  -rfakeroot
 dpkg-buildpackage: source package luajit-rocks
 dpkg-buildpackage: source version 1.0.3
-dpkg-buildpackage: source distribution UNRELEASED
+dpkg-buildpackage: source distribution trusty
 dpkg-buildpackage: source changed by Boris Fomitchev <bfomitchev@nvidia.com>
  dpkg-source --before-build luajit-rocks-1.0.3
 dpkg-buildpackage: host architecture amd64
@@ -543,7 +543,7 @@ I: unmounting /usr/local/mydebs filesystem
 I: unmounting dev/pts filesystem
 I: unmounting run/shm filesystem
 I: unmounting proc filesystem
-I: Current time: Mon Nov 23 14:30:37 PST 2015
-I: pbuilder-time-stamp: 1448317837
+I: Current time: Mon Nov 23 14:42:31 PST 2015
+I: pbuilder-time-stamp: 1448318551
  -> Cleaning COW directory
-  forking: rm -rf /var/cache/pbuilder/build//cow.12842 
+  forking: rm -rf /var/cache/pbuilder/build//cow.24325 
