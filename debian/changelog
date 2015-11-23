@@ -1,4 +1,4 @@
-luajit-rocks (1.0.3) UNRELEASED; urgency=medium
+luajit-rocks (1.0.3) trusty; urgency=medium
   * Adding 1.0.2 binaries. Fixing teh build script to use cow.
  -- Boris Fomitchev <bfomitchev@nvidia.com>  Mon, 23 Nov 2015 12:45:58 -0800
 

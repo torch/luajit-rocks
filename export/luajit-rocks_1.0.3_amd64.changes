@@ -1,0 +1,28 @@
+Format: 1.8
+Date: Mon, 23 Nov 2015 12:45:58 -0800
+Source: luajit-rocks
+Binary: luajit-rocks
+Architecture: source all
+Version: 1.0.3
+Distribution: UNRELEASED
+Urgency: medium
+Maintainer: Soumith Chintala <soumith@fb.com>
+Changed-By: Boris Fomitchev <bfomitchev@nvidia.com>
+Description: 
+ luajit-rocks - This package contains LuaRocks, a tool for managing rocks.  A Lua
+Changes: 
+ luajit-rocks (1.0.3) UNRELEASED; urgency=medium
+ .
+   * Adding 1.0.2 binaries. Fixing teh build script to use cow.
+Checksums-Sha1: 
+ ec82e2087595ae10d6735fdde6ea6fd48609486c 677 luajit-rocks_1.0.3.dsc
+ d39a0364995dfe4dc413ee3e684e5ac60e33ef89 20247593 luajit-rocks_1.0.3.tar.gz
+ 7c086d39f89845080d755f5083f688e97caca734 84770 luajit-rocks_1.0.3_all.deb
+Checksums-Sha256: 
+ 567f8f4e04d0fb70323f347da92e473e5a2ea7c02026700510381d706394474e 677 luajit-rocks_1.0.3.dsc
+ d892120c1d383a1e8cf518437d5a3dbbe1d3e2673f9eade4a4720123a60569c2 20247593 luajit-rocks_1.0.3.tar.gz
+ e24c24f585f9b830a553d33f22399aa571595161fbaaddd0814bd6b261869f34 84770 luajit-rocks_1.0.3_all.deb
+Files: 
+ b244909176859fb204acd3e5f903c0cd 677 universe/interpreters optional luajit-rocks_1.0.3.dsc
+ 0cd7fc31ffccffc428b777c5a588021b 20247593 universe/interpreters optional luajit-rocks_1.0.3.tar.gz
+ b667e4e95cf66597a993dfc355b764b6 84770 universe/interpreters optional luajit-rocks_1.0.3_all.deb
