@@ -24,11 +24,13 @@ NODOTABIVER= 51
 # removing the '#' in front of them. Make sure you force a full recompile
 # with "make clean", followed by "make" if you change any options.
 #
+DEFAULT_CC = gcc
+#
 # LuaJIT builds as a native 32 or 64 bit binary by default.
-CC= gcc
+CC= $(DEFAULT_CC)
 #
 # Use this if you want to force a 32 bit build on a 64 bit multilib OS.
-#CC= gcc -m32
+#CC= $(DEFAULT_CC) -m32
 #
 # Since the assembler part does NOT maintain a frame pointer, it's pointless
 # to slow down the C part by not omitting it. Debugging, tracebacks and
@@ -148,6 +150,29 @@ XCFLAGS=
 ##############################################################################
 
 ##############################################################################
+# Host system detection.
+##############################################################################
+
+ifeq (Windows,$(findstring Windows,$(OS))$(MSYSTEM)$(TERM))
+  HOST_SYS= Windows
+  HOST_RM= del
+else
+  HOST_SYS:= $(shell uname -s)
+  ifneq (,$(findstring MINGW,$(HOST_SYS)))
+    HOST_SYS= Windows
+    HOST_MSYS= mingw
+  endif
+  ifneq (,$(findstring CYGWIN,$(HOST_SYS)))
+    HOST_SYS= Windows
+    HOST_MSYS= cygwin
+  endif
+  # Use Clang for OSX host.
+  ifeq (Darwin,$(HOST_SYS))
+    DEFAULT_CC= clang
+  endif
+endif
+
+##############################################################################
 # Flags and options for host and target.
 ##############################################################################
 
@@ -221,6 +246,11 @@ ifneq (,$(findstring LJ_TARGET_ARM64 ,$(TARGET_TESTARCH)))
   TARGET_LJARCH= arm64
 else
 ifneq (,$(findstring LJ_TARGET_PPC ,$(TARGET_TESTARCH)))
+  ifneq (,$(findstring LJ_LE 1,$(TARGET_TESTARCH)))
+    TARGET_ARCH= -DLJ_ARCH_ENDIAN=LUAJIT_LE
+  else
+    TARGET_ARCH= -DLJ_ARCH_ENDIAN=LUAJIT_BE
+  endif
   TARGET_LJARCH= ppc
 else
 ifneq (,$(findstring LJ_TARGET_MIPS ,$(TARGET_TESTARCH)))
@@ -243,9 +273,6 @@ ifneq (,$(findstring LJ_TARGET_PS3 1,$(TARGET_TESTARCH)))
   TARGET_XCFLAGS+= -DLUAJIT_USE_SYSMALLOC
   TARGET_XLIBS+= -lpthread
 endif
-ifneq (,$(findstring LJ_NO_UNWIND 1,$(TARGET_TESTARCH)))
-  TARGET_ARCH+= -DLUAJIT_NO_UNWIND
-endif
 
 TARGET_XCFLAGS+= $(CCOPT_$(TARGET_LJARCH))
 TARGET_ARCH+= $(patsubst %,-DLUAJIT_TARGET=LUAJIT_ARCH_%,$(TARGET_LJARCH))
@@ -266,23 +293,8 @@ ifneq (,$(LMULTILIB))
 endif
 
 ##############################################################################
-# System detection.
+# Target system detection.
 ##############################################################################
-
-ifeq (Windows,$(findstring Windows,$(OS))$(MSYSTEM)$(TERM))
-  HOST_SYS= Windows
-  HOST_RM= del
-else
-  HOST_SYS:= $(shell uname -s)
-  ifneq (,$(findstring MINGW,$(HOST_SYS)))
-    HOST_SYS= Windows
-    HOST_MSYS= mingw
-  endif
-  ifneq (,$(findstring CYGWIN,$(HOST_SYS)))
-    HOST_SYS= Windows
-    HOST_MSYS= cygwin
-  endif
-endif
 
 TARGET_SYS?= $(HOST_SYS)
 ifeq (Windows,$(TARGET_SYS))
@@ -399,6 +411,10 @@ ifeq (,$(findstring LJ_ABI_SOFTFP 1,$(TARGET_TESTARCH)))
   TARGET_ARCH+= -DLJ_ABI_SOFTFP=0
 else
   TARGET_ARCH+= -DLJ_ABI_SOFTFP=1
+endif
+ifneq (,$(findstring LJ_NO_UNWIND 1,$(TARGET_TESTARCH)))
+  DASM_AFLAGS+= -D NO_UNWIND
+  TARGET_ARCH+= -DLUAJIT_NO_UNWIND
 endif
 DASM_AFLAGS+= -D VER=$(subst LJ_ARCH_VERSION_,,$(filter LJ_ARCH_VERSION_%,$(subst LJ_ARCH_VERSION ,LJ_ARCH_VERSION_,$(TARGET_TESTARCH))))
 ifeq (Windows,$(TARGET_SYS))

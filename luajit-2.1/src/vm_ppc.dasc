@@ -320,13 +320,6 @@
 |
 |//-----------------------------------------------------------------------
 |
-|// These basic macros should really be part of DynASM.
-|.macro srwi, rx, ry, n; rlwinm rx, ry, 32-n, n, 31; .endmacro
-|.macro slwi, rx, ry, n; rlwinm rx, ry, n, 0, 31-n; .endmacro
-|.macro rotlwi, rx, ry, n; rlwinm rx, ry, n, 0, 31; .endmacro
-|.macro rotlw, rx, ry, rn; rlwnm rx, ry, rn, 0, 31; .endmacro
-|.macro subi, rx, ry, i; addi rx, ry, -i; .endmacro
-|
 |// Trap for not-yet-implemented parts.
 |.macro NYI; tw 4, sp, sp; .endmacro
 |
@@ -2532,7 +2525,7 @@ static void build_subroutines(BuildCtx *ctx)
   |.if JIT
   |  // RA = resultptr, RB = meta base
   |  lwz INS, -4(PC)
-  |    lwz TMP3, -20(RB)		// Save previous trace number.
+  |    lwz TRACE:TMP2, -20(RB)		// Save previous trace.
   |   addic. TMP1, MULTRES, -8
   |  decode_RA8 RC, INS			// Call base.
   |   beq >2
@@ -2547,15 +2540,11 @@ static void build_subroutines(BuildCtx *ctx)
   |   decode_RA8 RA, INS
   |   decode_RB8 RB, INS
   |   add RA, RA, RB
-  |  lwz TMP1, DISPATCH_J(trace)(DISPATCH)
   |3:
   |   cmplw RA, RC
   |   bgt >9				// More results wanted?
   |
-  |  slwi TMP2, TMP3, 2
-  |  lwzx TRACE:TMP2, TMP1, TMP2
-  |  cmpwi TRACE:TMP2, 0
-  |  beq ->cont_nop
+  |  lhz TMP3, TRACE:TMP2->traceno
   |  lhz RD, TRACE:TMP2->link
   |  cmpw RD, TMP3
   |   cmpwi cr1, RD, 0
@@ -4289,13 +4278,13 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  lwz TAB:CARG2, 4(RB)
     |.if DUALNUM
     |  add RC, BASE, RC
-    |    lbz TMP3, TAB:RB->marked
+    |    lbz TMP3, TAB:CARG2->marked
     |  lwz TMP0, TAB:CARG2->asize
     |  lwz CARG3, 4(RC)
     |   lwz TMP1, TAB:CARG2->array
     |.else
     |  lfdx f0, BASE, RC
-    |    lbz TMP3, TAB:RB->marked
+    |    lbz TMP3, TAB:CARG2->marked
     |  lwz TMP0, TAB:CARG2->asize
     |  toint CARG3, f0
     |   lwz TMP1, TAB:CARG2->array
