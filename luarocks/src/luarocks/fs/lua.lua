@@ -122,6 +122,27 @@ function fs_lua.execute_quiet(command, ...)
    end
 end
 
+--- Checks if the given tool is available.
+-- The tool is executed using a flag, usually just to ask its version.
+-- @param tool_cmd string: The command to be used to check the tool's presence (e.g. hg in case of Mercurial)
+-- @param tool_name string: The actual name of the tool (e.g. Mercurial)
+-- @param arg string: The flag to pass to the tool. '--version' by default.
+function fs_lua.is_tool_available(tool_cmd, tool_name, arg)
+   assert(type(tool_cmd) == "string")
+   assert(type(tool_name) == "string")
+
+   arg = arg or "--version"
+   assert(type(arg) == "string")
+
+   if not fs.execute_quiet(tool_cmd, arg) then
+      local msg = "'%s' program not found. Make sure %s is installed and is available in your PATH " ..
+                  "(or you may want to edit the 'variables.%s' value in file 'config.lua')"
+      return nil, msg:format(tool_cmd, tool_name, tool_cmd:upper())
+   else
+      return true
+   end
+end
+
 --- Check the MD5 checksum for a file.
 -- @param file string: The file to be checked.
 -- @param md5sum string: The string with the expected MD5 checksum.
@@ -207,8 +228,13 @@ end
 -- Allows leaving a directory (e.g. for deleting it) in
 -- a crossplatform way.
 function fs_lua.change_dir_to_root()
-   table.insert(dir_stack, lfs.currentdir())
+   local current = lfs.currentdir()
+   if not current or current == "" then
+      return false
+   end
+   table.insert(dir_stack, current)
    lfs.chdir("/") -- works on Windows too
+   return true
 end
 
 --- Change working directory to the previous in the dir stack.
@@ -540,7 +566,7 @@ local redirect_protocols = {
 local function request(url, method, http, loop_control)
    local result = {}
    
-   local proxy = cfg.proxy
+   local proxy = cfg.http_proxy
    if type(proxy) ~= "string" then proxy = nil end
    -- LuaSocket's http.request crashes when given URLs missing the scheme part.
    if proxy and not proxy:find("://") then
@@ -648,6 +674,11 @@ function fs_lua.download(url, filename, cache)
    assert(type(filename) == "string" or not filename)
 
    filename = fs.absolute_name(filename or dir.base_name(url))
+
+   -- delegate to the configured downloader so we don't have to deal with whitelists
+   if cfg.no_proxy then
+      return fs.use_downloader(url, filename, cache)
+   end
    
    local content, err, https_err
    if util.starts_with(url, "http:") then
@@ -655,7 +686,8 @@ function fs_lua.download(url, filename, cache)
    elseif util.starts_with(url, "ftp:") then
       content, err = ftp.get(url)
    elseif util.starts_with(url, "https:") then
-      if luasec_ok then
+      -- skip LuaSec when proxy is enabled since it is not supported
+      if luasec_ok and not cfg.https_proxy then
          content, err = http_request(url, https, cache and filename)
       else
          https_err = true
@@ -732,7 +764,7 @@ function fs_lua.chmod(file, mode)
    -- LuaPosix (as of 5.1.15) does not support octal notation...
    if mode:sub(1,1) == "0" then
       local new_mode = {}
-      for c in mode:sub(2):gmatch(".") do
+      for c in mode:sub(-3):gmatch(".") do
          table.insert(new_mode, octal_to_rwx[c])
       end
       mode = table.concat(new_mode)

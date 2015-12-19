@@ -63,6 +63,76 @@ function util.matchquote(s)
    return (s:gsub("[?%-+*%[%].%%()$^]","%%%1"))
 end
 
+--- List of supported arguments.
+-- Arguments that take no parameters are marked with the boolean true.
+-- Arguments that take a parameter are marked with a descriptive string.
+-- Arguments that may take an empty string are described in quotes,
+-- (as in the value for --detailed="<text>").
+-- For all other string values, it means the parameter is mandatory.
+local supported_flags = {
+   ["all"] = true,
+   ["api-key"] = "<key>",
+   ["append"] = true,
+   ["arch"] = "<arch>",
+   ["bin"] = true,
+   ["binary"] = true,
+   ["branch"] = "<branch-name>",
+   ["debug"] = true,
+   ["deps"] = true,
+   ["deps-mode"] = "<mode>",
+   ["detailed"] = "\"<text>\"",
+   ["force"] = true,
+   ["from"] = "<server>",
+   ["help"] = true,
+   ["home"] = true,
+   ["homepage"] = "\"<url>\"",
+   ["keep"] = true,
+   ["lib"] = "<library>",
+   ["license"] = "\"<text>\"",
+   ["list"] = true,
+   ["local"] = true,
+   ["local-tree"] = true,
+   ["lr-bin"] = true,
+   ["lr-cpath"] = true,
+   ["lr-path"] = true,
+   ["lua-version"] = "<vers>",
+   ["lua-ver"] = true,
+   ["lua-incdir"] = true,
+   ["lua-libdir"] = true,
+   ["modules"] = true,
+   ["mversion"] = true,
+   ["no-refresh"] = true,
+   ["nodeps"] = true,
+   ["old-versions"] = true,
+   ["only-deps"] = true,
+   ["only-from"] = "<server>",
+   ["only-server"] = "<server>",
+   ["only-sources"] = "<url>",
+   ["only-sources-from"] = "<url>",
+   ["outdated"] = true,
+   ["output"] = "<file>",
+   ["pack-binary-rock"] = true,
+   ["porcelain"] = true,
+   ["quick"] = true,
+   ["rock-dir"] = true,
+   ["rock-tree"] = true,
+   ["rock-trees"] = true,
+   ["rockspec"] = true,
+   ["rockspec-format"] = "<ver>",
+   ["server"] = "<server>",
+   ["skip-pack"] = true,
+   ["source"] = true,
+   ["summary"] = "\"<text>\"",
+   ["system-config"] = true,
+   ["tag"] = "<tag>",
+   ["timeout"] = "<seconds>",
+   ["to"] = "<path>",
+   ["tree"] = "<path>",
+   ["user-config"] = true,
+   ["verbose"] = true,
+   ["version"] = true,
+}
+
 --- Extract flags from an arguments list.
 -- Given string arguments, extract flag arguments into a flags set.
 -- For example, given "foo", "--tux=beep", "--bla", "bar", "--baz",
@@ -71,19 +141,59 @@ end
 function util.parse_flags(...)
    local args = {...}
    local flags = {}
-   for i = #args, 1, -1 do
+   local i = 1
+   local out = {}
+   local ignore_flags = false
+   while i <= #args do
       local flag = args[i]:match("^%-%-(.*)")
-      if flag then
+      if flag == "--" then
+         ignore_flags = true
+      end
+      if flag and not ignore_flags then
          local var,val = flag:match("([a-z_%-]*)=(.*)")
          if val then
-            flags[var] = val
+            local vartype = supported_flags[var]
+            if type(vartype) == "string" then
+               if val == "" and vartype:sub(1,1) ~= '"' then
+                  return { ERROR = "Invalid argument: parameter to flag --"..var.."="..vartype.." cannot be empty." }
+               end
+               flags[var] = val
+            else
+               if vartype then
+                  return { ERROR = "Invalid argument: flag --"..var.." does not take an parameter." }
+               else
+                  return { ERROR = "Invalid argument: unknown flag --"..var.."." }
+               end
+            end
          else
-            flags[flag] = true
+            local var = flag
+            local vartype = supported_flags[var]
+            if type(vartype) == "string" then
+               i = i + 1
+               local val = args[i]
+               if not val then
+                  return { ERROR = "Invalid argument: flag --"..var.."="..vartype.." expects a parameter." }
+               end
+               if val:match("^%-%-.*") then
+                  return { ERROR = "Invalid argument: flag --"..var.."="..vartype.." expects a parameter (if you really want to pass "..val.." as an argument to --"..var..", use --"..var.."="..val..")." }
+               else
+                  if val == "" and vartype:sub(1,1) ~= '"' then
+                     return { ERROR = "Invalid argument: parameter to flag --"..var.."="..vartype.." cannot be empty." }
+                  end
+                  flags[var] = val
+               end
+            elseif vartype == true then
+               flags[var] = true
+            else
+               return { ERROR = "Invalid argument: unknown flag --"..var.."." }
+            end
          end
-         table.remove(args, i)
+      else
+         table.insert(out, args[i])
       end
+      i = i + 1
    end
-   return flags, unpack(args)
+   return flags, unpack(out)
 end
 
 --- Build a sequence of flags for forwarding from one command to
@@ -177,7 +287,7 @@ local var_format_pattern = "%$%((%a[%a%d_]+)%)"
 -- the original table (ie, does not copy recursively).
 -- @param tbl table: the input table
 -- @return table: a new table with the same contents.
-local function make_shallow_copy(tbl)
+function util.make_shallow_copy(tbl)
    local copy = {}
    for k,v in pairs(tbl) do
       copy[k] = v
@@ -196,7 +306,7 @@ end
 -- needed variables.
 -- @param msg string: the warning message to display.
 function util.warn_if_not_used(var_defs, needed_set, msg)
-   needed_set = make_shallow_copy(needed_set)
+   needed_set = util.make_shallow_copy(needed_set)
    for _, val in pairs(var_defs) do
       for used in val:gmatch(var_format_pattern) do
          needed_set[used] = nil

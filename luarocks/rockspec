@@ -1,7 +1,10 @@
 package = "LuaRocks"
-local VER = "2.2.0beta1"
-local REV = "1"
-version = VER.."-"..REV
+local VER = "scm"
+version = VER .. "-1"
+
+source = {
+   url = "--this rockspec is used by `make bootstrap` only--",
+}
 
 description = {
    summary = "A deployment and management system for Lua modules.",
@@ -23,16 +26,13 @@ dependencies = {
    "lua >= 5.1"
 }
 
-source = {
-   url = "http://luarocks.org/releases/luarocks-"..VER..".tar.gz",
-}
-
 build = {
    type = "make",
    install_target = "install_rock",
    build_pass=false,
    install_variables = {
       BINDIR="$(BINDIR)",
-      LUADIR="$(LUADIR)"
+      LUADIR="$(LUADIR)",
+      LUA="$(LUA)",
    }
 }

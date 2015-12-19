@@ -8,6 +8,9 @@ local vars = {}
 vars.PREFIX = nil
 vars.VERSION = "2.2"
 vars.SYSCONFDIR = nil
+vars.CONFBACKUPDIR = nil
+vars.SYSCONFFILENAME = nil
+vars.CONFIG_FILE = nil
 vars.TREE_ROOT = nil
 vars.TREE_BIN = nil
 vars.TREE_LMODULE = nil
@@ -77,7 +80,7 @@ end
 
 local function exec(cmd)
 	--print(cmd)
-	local status = os.execute(cmd)
+	local status = os.execute("type NUL && "..cmd)
 	return (status == 0 or status == true) -- compat 5.1/5.2
 end
 
@@ -90,12 +93,12 @@ local function mkdir (dir)
 	return exec([[.\win32\tools\mkdir -p "]]..dir..[[" >NUL]])
 end
 
--- does the current user have admin priviledges ( = elevated)
+-- does the current user have admin privileges ( = elevated)
 local function permission()
 	return exec("net session >NUL 2>&1") -- fails if not admin
 end
 
--- rename file (full path) to backup (name only), appending number if required
+-- rename filename (full path) to backupname (name only), appending number if required
 -- returns the new name (name only)
 local function backup(filename, backupname)
 	local path = filename:match("(.+)%\\.-$").."\\"
@@ -119,14 +122,12 @@ local function print_help()
 Installs LuaRocks.
 
 /P [dir]       Where to install LuaRocks. 
-               Note that version; $VERSION, will be appended to this
-               path, so "/P c:\luarocks\" will install in 
-               "c:\luarocks\$VERSION\"
                Default is %PROGRAMFILES%\LuaRocks
 
 Configuring the destinations:
-/TREE [dir]    Root of the local tree of installed rocks.
-               Default is %PROGRAMFILES%\LuaRocks\systree
+/TREE [dir]    Root of the local system tree of installed rocks.
+               Default is {BIN}\..\ if {BIN} ends with '\bin'
+               otherwise it is {BIN}\systree. 
 /SCRIPTS [dir] Where to install commandline scripts installed by
                rocks. Default is {TREE}\bin.
 /LUAMOD [dir]  Where to install Lua modules installed by rocks.
@@ -175,7 +176,7 @@ Other options:
 /F             Remove installation directory if it already exists.
 /NOREG         Do not load registry info to register '.rockspec'
                extension with LuaRocks commands (right-click).
-/NOADMIN       The installer requires admin priviledges. If not
+/NOADMIN       The installer requires admin privileges. If not
                available it will elevate a new process. Use this
                switch to prevent elevation, but make sure the
                destination paths are all accessible for the current
@@ -253,7 +254,7 @@ local function check_flags()
 			die("Cannot combine option /L with any of /LUA /BIN /LIB /INC")
 		end
 		if vars.LUA_VERSION ~= "5.1" then
-			die("Bundled Lua version is 5.1, cannot install 5.2")
+			die("Bundled Lua version is 5.1, cannot install "..vars.LUA_VERSION)
 		end
 	end
 	if vars.LUA_VERSION ~= "5.1" then
@@ -319,7 +320,7 @@ local function look_for_interpreter (directory)
 			return true
 		end
 	end
-	print("      No Lua interpreter found")
+	--print("      No Lua interpreter found")
 	return false
 end
 
@@ -360,7 +361,14 @@ local function look_for_headers (directory)
 		die(S"lua.h not found in $LUA_INCDIR")
 	end
 
-	for _, e in ipairs{ [[\]], [[\include\]]} do
+	for _, e in ipairs{ 
+        S([[\include\lua\$LUA_VERSION]]), 
+        S([[\include\lua$LUA_SHORTV]]), 
+        S([[\include\lua$LUA_VERSION]]), 
+        S([[\include\$LUA_VERSION]]), 
+        [[\include\]],
+        [[\]], 
+      } do
 		print("    checking for "..directory..e.."\\lua.h")
 		if exists(directory..e.."\\lua.h") then
 			vars.LUA_INCDIR = directory..e
@@ -470,6 +478,28 @@ local function look_for_lua_install ()
 	return false
 end
 
+-- backup config[x.x].lua[.bak] and site_config[_x_x].lua
+local function backup_config_files()
+  local temppath
+  while not temppath do
+    temppath = os.getenv("temp").."\\LR-config-backup-"..tostring(math.random(10000))
+    if exists(temppath) then temppath = nil end
+  end
+  vars.CONFBACKUPDIR = temppath
+  mkdir(vars.CONFBACKUPDIR)
+  exec(S[[COPY "$PREFIX\config*.*" "$CONFBACKUPDIR" >NUL]])
+  exec(S[[COPY "$PREFIX\lua\luarocks\site_config*.*" "$CONFBACKUPDIR" >NUL]])
+end
+
+-- restore previously backed up config files
+local function restore_config_files()
+  if not vars.CONFBACKUPDIR then return end -- there is no backup to restore
+  exec(S[[COPY "$CONFBACKUPDIR\config*.*" "$PREFIX" >NUL]])
+  exec(S[[COPY "$CONFBACKUPDIR\site_config*.*" "$PREFIX\lua\luarocks" >NUL]])
+  -- cleanup
+  exec(S[[RD /S /Q "$CONFBACKUPDIR"]])
+  vars.CONFBACKUPDIR = nil
+end
 
 -- ***********************************************************
 -- Installer script start
@@ -550,12 +580,12 @@ check_flags()
 
 if not permission() then
 	if not NOADMIN then
-		-- must elevate the process with admin priviledges
+		-- must elevate the process with admin privileges
         if not exec("PowerShell /? >NUL 2>&1") then
           -- powershell is not available, so error out
-          die("No administrative priviledges detected and cannot auto-elevate. Please run with admin priviledges or use the /NOADMIN switch")
+          die("No administrative privileges detected and cannot auto-elevate. Please run with admin privileges or use the /NOADMIN switch")
         end
-		print("Need admin priviledges, now elevating a new process to continue installing...")
+		print("Need admin privileges, now elevating a new process to continue installing...")
 		local runner = os.getenv("TEMP").."\\".."LuaRocks_Installer.bat"
 		local f = io.open(runner, "w")
 		f:write("@echo off\n")
@@ -567,21 +597,20 @@ if not permission() then
 		f:close()
 		-- run the created temp batch file in elevated mode
 		exec("PowerShell -Command (New-Object -com 'Shell.Application').ShellExecute('"..runner.."', '', '', 'runas')\n")
-		print("Now exiting unpriviledged installer")
+		print("Now exiting unprivileged installer")
        	os.exit()  -- exit here, the newly created elevated process will do the installing
 	else
-		print("Attempting to install without admin priviledges...")
+		print("Attempting to install without admin privileges...")
 	end
 else
-	print("Admin priviledges available for installing")
+	print("Admin privileges available for installing")
 end
 
 vars.PREFIX = vars.PREFIX or os.getenv("PROGRAMFILES")..[[\LuaRocks]]
-vars.FULL_PREFIX = S"$PREFIX\\$VERSION"
-vars.BINDIR = vars.FULL_PREFIX
-vars.LIBDIR = vars.FULL_PREFIX
-vars.LUADIR = S"$FULL_PREFIX\\lua"
-vars.INCDIR = S"$FULL_PREFIX\\include"
+vars.BINDIR = vars.PREFIX
+vars.LIBDIR = vars.PREFIX
+vars.LUADIR = S"$PREFIX\\lua"
+vars.INCDIR = S"$PREFIX\\include"
 vars.LUA_SHORTV = vars.LUA_VERSION:gsub("%.", "")
 
 if INSTALL_LUA then
@@ -602,15 +631,23 @@ else
     vars.UNAME_M = get_architecture()  -- can only do when installation was found
 end
 
-local datapath
-if vars.UNAME_M == "x86" then
-	datapath = os.getenv("PROGRAMFILES") .. [[\LuaRocks]]
-else
-	-- our target interpreter is 64bit, so the tree (with binaries) should go into 64bit program files
-	datapath = os.getenv("ProgramW6432") .. [[\LuaRocks]]
+-- check location of system tree
+if not vars.TREE_ROOT then
+  -- no system tree location given, so we need to construct a default value
+  if vars.LUA_BINDIR:lower():match([[([\/]+bin[\/]*)$]]) then
+    -- lua binary is located in a 'bin' subdirectory, so assume
+    -- default Lua layout and match rocktree on top
+    vars.TREE_ROOT = vars.LUA_BINDIR:lower():gsub([[[\/]+bin[\/]*$]], [[\]])
+  else
+    -- no 'bin', so use a named tree next to the Lua executable
+    vars.TREE_ROOT = vars.LUA_BINDIR .. [[\systree]]
+  end
 end
+
+local datapath
 vars.SYSCONFDIR = vars.SYSCONFDIR or vars.PREFIX
-vars.TREE_ROOT = vars.TREE_ROOT or datapath..[[\systree]]
+vars.SYSCONFFILENAME = S"config-$LUA_VERSION.lua"
+vars.CONFIG_FILE = vars.SYSCONFDIR.."\\"..vars.SYSCONFFILENAME
 if SELFCONTAINED then
 	vars.SYSCONFDIR = vars.PREFIX
 	vars.TREE_ROOT = vars.PREFIX..[[\systree]]
@@ -624,8 +661,8 @@ print(S[[
 ==========================
 
 Will configure LuaRocks with the following paths:
-LuaRocks        : $FULL_PREFIX
-Config file     : $SYSCONFDIR\config.lua
+LuaRocks        : $PREFIX
+Config file     : $CONFIG_FILE
 Rocktree        : $TREE_ROOT
 
 Lua interpreter : $LUA_BINDIR\$LUA_INTERPRETER
@@ -653,17 +690,19 @@ print([[
 -- ***********************************************************
 -- Install LuaRocks files
 -- ***********************************************************
-if FORCE then
-	print(S"Removing $FULL_PREFIX...")
-	exec(S[[RD /S /Q "$FULL_PREFIX"]])
-	print()
+
+if exists(vars.PREFIX) then
+  if not FORCE then
+    die(S"$PREFIX exists. Use /F to force removal and reinstallation.")
+  else
+    backup_config_files()
+    print(S"Removing $PREFIX...")
+    exec(S[[RD /S /Q "$PREFIX"]])
+    print()
+  end
 end
 
-if exists(vars.FULL_PREFIX) then
-	die(S"$FULL_PREFIX exists. Use /F to force removal and reinstallation.")
-end
-
-print(S"Installing LuaRocks in $FULL_PREFIX...")
+print(S"Installing LuaRocks in $PREFIX...")
 if not exists(vars.BINDIR) then
 	if not mkdir(vars.BINDIR) then
 		die()
@@ -729,7 +768,8 @@ IF NOT "%LUA_PATH_5_3%"=="" (
 )
 SET "PATH=$BINDIR;%PATH%"
 "$LUA_BINDIR\$LUA_INTERPRETER" "$BINDIR\]]..c..[[.lua" %*
-IF NOT "%ERRORLEVEL%"=="2" GOTO EXITLR
+SET EXITCODE=%ERRORLEVEL%
+IF NOT "%EXITCODE%"=="2" GOTO EXITLR
 
 REM Permission denied error, try and auto elevate...
 REM already an admin? (checking to prevent loops)
@@ -754,48 +794,33 @@ ECHO ECHO Press any key to close this window... >> "%TMPFILE%"
 ECHO PAUSE ^> NUL                               >> "%TMPFILE%"
 ECHO DEL "%TMPFILE%"                            >> "%TMPFILE%"
 
-ECHO Now retrying as a priviledged user...
+ECHO Now retrying as a privileged user...
 PowerShell -Command (New-Object -com 'Shell.Application').ShellExecute('%TMPFILE%', '', '', 'runas')
 
 :EXITLR
-ENDLOCAL
+exit /b %EXITCODE% 
 ]])
 	f:close()
 	print(S"Created LuaRocks command: $BINDIR\\"..c..".bat")
 end
 
--- part below was commented out as its purpose was unclear
--- see https://github.com/keplerproject/luarocks/pull/197#issuecomment-30176548
-
--- configure 'scripts' directory
--- if vars.TREE_BIN then
--- 	mkdir(vars.TREE_BIN)
--- 	if not USE_MINGW then
--- 		-- definitly not for MinGW because of conflicting runtimes
--- 		-- but is it ok to do it for others???
--- 		exec(S[[COPY lua5.1\bin\*.dll "$TREE_BIN" >NUL]])
--- 	end
--- else
--- 	if not USE_MINGW then
--- 	mkdir(S[[$TREE_ROOT\bin]])
--- 		-- definitly not for MinGW because of conflicting runtimes
--- 		-- but is it ok to do it for others???
--- 		exec(S[[COPY lua5.1\bin\*.dll "$TREE_ROOT"\bin >NUL]])
--- 	end
--- end
-
 -- ***********************************************************
 -- Configure LuaRocks
 -- ***********************************************************
 
+restore_config_files()
 print()
 print("Configuring LuaRocks...")
 
 -- Create a site-config file
-if exists(S[[$LUADIR\luarocks\site_config.lua]]) then
-	exec(S[[RENAME "$LUADIR\luarocks\site_config.lua" site_config.lua.bak]])
+local site_config = S("site_config_$LUA_VERSION"):gsub("%.","_")
+if exists(S([[$LUADIR\luarocks\]]..site_config..[[.lua]])) then
+	local nname = backup(S([[$LUADIR\luarocks\]]..site_config..[[.lua]]), site_config..".lua.bak")
+	print("***************")
+	print("*** WARNING *** LuaRocks site_config file already exists: '"..site_config..".lua'. The old file has been renamed to '"..nname.."'")
+	print("***************")
 end
-local f = io.open(vars.LUADIR.."\\luarocks\\site_config.lua", "w")
+local f = io.open(vars.LUADIR.."\\luarocks\\"..site_config..".lua", "w")
 f:write(S[=[
 local site_config = {}
 site_config.LUA_INCDIR=[[$LUA_INCDIR]]
@@ -810,7 +835,7 @@ else
 end
 f:write(S[=[
 site_config.LUAROCKS_UNAME_M=[[$UNAME_M]]
-site_config.LUAROCKS_SYSCONFIG=[[$SYSCONFDIR\config.lua]]
+site_config.LUAROCKS_SYSCONFIG=[[$CONFIG_FILE]]
 site_config.LUAROCKS_ROCKS_TREE=[[$TREE_ROOT]]
 site_config.LUAROCKS_PREFIX=[[$PREFIX]]
 site_config.LUAROCKS_DOWNLOADER=[[wget]]
@@ -819,24 +844,16 @@ site_config.LUAROCKS_MD5CHECKER=[[md5sum]]
 if FORCE_CONFIG then
 	f:write("site_config.LUAROCKS_FORCE_CONFIG=true\n")
 end
-if exists(vars.LUADIR.."\\luarocks\\site_config.lua.bak") then
-	for line in io.lines(vars.LUADIR.."\\luarocks\\site_config.lua.bak", "r") do
-		f:write(line)
-		f:write("\n")
-	end
-	exec(S[[DEL /F /Q "$LUADIR\luarocks\site_config.lua.bak"]])
-end
 f:write("return site_config\n")
 f:close()
-print(S[[Created LuaRocks site-config file: $LUADIR\luarocks\site_config.lua]])
+print(S([[Created LuaRocks site-config file: $LUADIR\luarocks\]]..site_config..[[.lua]]))
 
 -- create config file
-vars.CONFIG_FILE = vars.SYSCONFDIR.."\\config.lua"
 if not exists(vars.SYSCONFDIR) then
 	mkdir(vars.SYSCONFDIR)
 end
 if exists(vars.CONFIG_FILE) then
-	local nname = backup(vars.CONFIG_FILE, "config.bak")
+	local nname = backup(vars.CONFIG_FILE, vars.SYSCONFFILENAME..".bak")
 	print("***************")
 	print(S"*** WARNING *** LuaRocks config file already exists: '$CONFIG_FILE'. The old file has been renamed to '"..nname.."'")
 	print("***************")
@@ -905,17 +922,17 @@ if REGISTRY then
 	-- expand template with correct path information
 	print()
 	print([[Loading registry information for ".rockspec" files]])
-	exec( S[[win32\lua5.1\bin\lua5.1.exe "$FULL_PREFIX\LuaRocks.reg.lua" "$FULL_PREFIX\LuaRocks.reg.template"]] )
-	exec( S[[regedit /S "$FULL_PREFIX\\LuaRocks.reg"]] )
+	exec( S[[win32\lua5.1\bin\lua5.1.exe "$PREFIX\LuaRocks.reg.lua" "$PREFIX\LuaRocks.reg.template"]] )
+	exec( S[[regedit /S "$PREFIX\\LuaRocks.reg"]] )
 end
 
 -- ***********************************************************
 -- Cleanup
 -- ***********************************************************
 -- remove regsitry related files, no longer needed
-exec( S[[del "$FULL_PREFIX\LuaRocks.reg.*" >NUL]] )
+exec( S[[del "$PREFIX\LuaRocks.reg.*" >NUL]] )
 -- remove pe-parser module
-exec( S[[del "$FULL_PREFIX\pe-parser.lua" >NUL]] )
+exec( S[[del "$PREFIX\pe-parser.lua" >NUL]] )
 
 -- ***********************************************************
 -- Exit handlers 
@@ -935,8 +952,8 @@ Lua interpreter;
   PATH     :   $LUA_BINDIR
   PATHEXT  :   .LUA
 LuaRocks;
-  PATH     :   $FULL_PREFIX
-  LUA_PATH :   $FULL_PREFIX\lua\?.lua;$FULL_PREFIX\lua\?\init.lua
+  PATH     :   $PREFIX
+  LUA_PATH :   $PREFIX\lua\?.lua;$PREFIX\lua\?\init.lua
 Local user rocktree (Note: %APPDATA% is user dependent);
   PATH     :   %APPDATA%\LuaRocks\bin
   LUA_PATH :   %APPDATA%\LuaRocks\share\lua\$LUA_VERSION\?.lua;%APPDATA%\LuaRocks\share\lua\$LUA_VERSION\?\init.lua

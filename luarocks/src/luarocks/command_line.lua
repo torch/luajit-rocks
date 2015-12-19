@@ -10,6 +10,7 @@ local cfg = require("luarocks.cfg")
 local path = require("luarocks.path")
 local dir = require("luarocks.dir")
 local deps = require("luarocks.deps")
+local fs = require("luarocks.fs")
 
 local program = util.this_program("luarocks")
 
@@ -21,7 +22,7 @@ local function die(message, exitcode)
 
    local ok, err = pcall(util.run_scheduled_functions)
    if not ok then
-      util.printerr("\nLuaRocks "..cfg.program_version.." internal bug (please report at luarocks-developers@lists.sourceforge.net):\n"..err)
+      util.printerr("\nLuaRocks "..cfg.program_version.." internal bug (please report at https://github.com/keplerproject/luarocks/issues):\n"..err)
    end
    util.printerr("\nError: "..message)
    os.exit(exitcode or cfg.errorcodes.UNSPECIFIED)
@@ -63,6 +64,9 @@ function command_line.run_command(...)
    end
    local nonflags = { util.parse_flags(unpack(args)) }
    local flags = table.remove(nonflags, 1)
+   if flags.ERROR then
+      die(flags.ERROR.." See --help.")
+   end
    
    if flags["from"] then flags["server"] = flags["from"] end
    if flags["only-from"] then flags["only-server"] = flags["only-from"] end
@@ -79,7 +83,6 @@ function command_line.run_command(...)
    
    if flags["verbose"] then   -- setting it in the config file will kick-in earlier in the process
       cfg.verbose = true
-      local fs = require("luarocks.fs")
       fs.verbose()
    end
 
@@ -110,12 +113,6 @@ function command_line.run_command(...)
       end
    end
    command = command:gsub("-", "_")
-
-   if flags["extensions"] then
-      cfg.use_extensions = true
-      local type_check = require("luarocks.type_check")
-      type_check.load_extensions()
-   end
    
    if cfg.local_by_default then
       flags["local"] = true
@@ -126,16 +123,10 @@ function command_line.run_command(...)
    end
    
    if flags["branch"] then
-     if flags["branch"] == true or flags["branch"] == "" then
-       die("Argument error: use --branch=<branch-name>")
-     end
      cfg.branch = flags["branch"]
    end
    
    if flags["tree"] then
-      if flags["tree"] == true or flags["tree"] == "" then
-         die("Argument error: use --tree=<path>")
-      end
       local named = false
       for _, tree in ipairs(cfg.rocks_trees) do
          if type(tree) == "table" and flags["tree"] == tree.name then
@@ -153,6 +144,11 @@ function command_line.run_command(...)
          replace_tree(flags, args, root_dir)
       end
    elseif flags["local"] then
+      if not cfg.home_tree then
+         die("The --local flag is meant for operating in a user's home directory.\n"..
+             "You are running as a superuser, which is intended for system-wide operation.\n"..
+             "To force using the superuser's home, use --tree explicitly.")
+      end
       replace_tree(flags, args, cfg.home_tree)
    else
       local trees = cfg.rocks_trees
@@ -173,17 +169,11 @@ function command_line.run_command(...)
    cfg.variables.SCRIPTS_DIR = cfg.deploy_bin_dir
 
    if flags["server"] then
-      if flags["server"] == true then
-         die("Argument error: use --server=<url>")
-      end
       local protocol, path = dir.split_url(flags["server"])
       table.insert(cfg.rocks_servers, 1, protocol.."://"..path)
    end
    
    if flags["only-server"] then
-      if flags["only-server"] == true then
-         die("Argument error: use --only-server=<url>")
-      end
       cfg.rocks_servers = { flags["only-server"] }
    end
 
@@ -196,6 +186,10 @@ function command_line.run_command(...)
          cfg.variables[k] = v
       end
    end
+
+   if not fs.current_dir() or fs.current_dir() == "" then
+      die("Current directory does not exist. Please run LuaRocks from an existing directory.")
+   end
    
    if commands[command] then
       -- TODO the interface of run should be modified, to receive the
@@ -207,8 +201,8 @@ function command_line.run_command(...)
       local cmd = require(commands[command])
       local xp, ok, err, exitcode = xpcall(function() return cmd.run(unpack(args)) end, function(err)
          die(debug.traceback("LuaRocks "..cfg.program_version
-            .." bug (please report at luarocks-developers@lists.sourceforge.net).\n"
-            ..err, 2))
+            .." bug (please report at https://github.com/keplerproject/luarocks/issues).\n"
+            ..err, 2), cfg.errorcodes.CRASH)
       end)
       if xp and (not ok) then
          die(err, exitcode)

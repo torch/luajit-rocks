@@ -74,7 +74,7 @@ function builtin.run(rockspec)
          add_flags(extras, "-I%s", incdirs)
          return execute(variables.CC.." "..variables.CFLAGS, "-c", "-o", object, "-I"..variables.LUA_INCDIR, source, unpack(extras))
       end
-      compile_library = function(library, objects, libraries, libdirs, name)
+      compile_library = function(library, objects, libraries, libdirs)
          local extras = { unpack(objects) }
          add_flags(extras, "-L%s", libdirs)
          add_flags(extras, "-l%s", libraries)
@@ -138,7 +138,7 @@ function builtin.run(rockspec)
          local resname = basename..".res"
          local wrapname = basename..".exe"
          make_rc(fullname, fullbasename..".rc")
-         local ok = execute(variables.RC, "-r", "-fo"..resname, rcname)
+         local ok = execute(variables.RC, "-nologo", "-r", "-fo"..resname, rcname)
          if not ok then return ok end
          ok = execute(variables.CC.." "..variables.CFLAGS, "-c", "-Fo"..object,
                       "-I"..variables.LUA_INCDIR, variables.WRAPPER)
@@ -170,7 +170,7 @@ function builtin.run(rockspec)
          end
          return execute(variables.LD.." "..variables.LIBFLAG, "-o", library, "-L"..variables.LUA_LIBDIR, unpack(extras))
       end
-      compile_wrapper_binary = function(fullname, name) return true, name end
+      compile_wrapper_binary = function(_, name) return true, name end
       --TODO EXEWRAPPER
    end
 
@@ -196,7 +196,9 @@ function builtin.run(rockspec)
      end
    end
    
-   
+   if not build.modules then
+      return nil, "Missing build.modules table"
+   end
    for name, info in pairs(build.modules) do
       local moddir = path.module_to_path(name)
       if type(info) == "string" then
