@@ -558,7 +558,16 @@
 ** without modifying the main part of the file.
 */
 
+/* Added for torch-android by Soumith Chintala */
 
+#ifdef __ANDROID__
+
+/* http://stackoverflow.com/questions/12299659/compiling-lua-lib-for-android-success-but-strange-segfaults */
+#if !defined(getlocaledecpoint)
+#define getlocaledecpoint() ('.') //Code-monkey style
+#endif
+
+#endif
 
 #endif
 
