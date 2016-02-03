@@ -28,6 +28,9 @@ IF(UNIX)
   SET(LUA_USE_POSIX 1)
 ENDIF()
 
+# compatibility with Lua 5.2
+SET(LUA_COMPAT_5_2 1)
+
 # Readline support
 FIND_PACKAGE(Readline)
 IF(READLINE_FOUND)

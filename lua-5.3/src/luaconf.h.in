@@ -16,6 +16,7 @@
 #cmakedefine LUA_USE_POSIX 1
 #cmakedefine LUA_USE_READLINE 1
 #cmakedefine LUA_BUILD_AS_DLL 1
+#cmakedefine LUA_COMPAT_5_2 1
 #define LUA_ROOT "@LUA_ROOT@/"
 
 /*
