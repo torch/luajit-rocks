@@ -273,17 +273,25 @@ IF(TARGET_LJARCH STREQUAL "ppc")
   ENDIF()
 ENDIF()
 
-add_executable(minilua src/host/minilua.c)
-SET_TARGET_PROPERTIES(minilua PROPERTIES COMPILE_DEFINITIONS "${TARGET_ARCH}")
-CHECK_LIBRARY_EXISTS(m sin "" MINILUA_USE_LIBM)
-if(MINILUA_USE_LIBM)
-  TARGET_LINK_LIBRARIES(minilua m)
-endif()
+if(LUAJIT_SYSTEM_MINILUA)
+  MESSAGE(STATUS "Using system lua for generating dynasm via: ${LUAJIT_SYSTEM_MINILUA}")
+  # SET(LUAJIT_SYSTEM_MINILUA ${LUAJIT_SYSTEM_MINILUA} CACHE STRING "system minilua" FORCE)
+  MESSAGE(STATUS "Executing command: ${LUAJIT_SYSTEM_MINILUA} ${CMAKE_CURRENT_SOURCE_DIR}/dynasm/dynasm.lua ${DASM_FLAGS} -o ${CMAKE_CURRENT_BINARY_DIR}/buildvm_arch.h ${CMAKE_CURRENT_SOURCE_DIR}/src/vm_${DASM_ARCH}.dasc")
+  add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/buildvm_arch.h
+    COMMAND ${LUAJIT_SYSTEM_MINILUA} ${CMAKE_CURRENT_SOURCE_DIR}/dynasm/dynasm.lua ${DASM_FLAGS} -o ${CMAKE_CURRENT_BINARY_DIR}/buildvm_arch.h ${CMAKE_CURRENT_SOURCE_DIR}/src/vm_${DASM_ARCH}.dasc)
+else(LUAJIT_SYSTEM_MINILUA)
+  add_executable(minilua src/host/minilua.c)
+  SET_TARGET_PROPERTIES(minilua PROPERTIES COMPILE_DEFINITIONS "${TARGET_ARCH}")
+  CHECK_LIBRARY_EXISTS(m sin "" MINILUA_USE_LIBM)
+  if(MINILUA_USE_LIBM)
+    TARGET_LINK_LIBRARIES(minilua m)
+  endif()
 
-add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/buildvm_arch.h
-  COMMAND minilua ${CMAKE_CURRENT_SOURCE_DIR}/dynasm/dynasm.lua ${DASM_FLAGS} -o ${CMAKE_CURRENT_BINARY_DIR}/buildvm_arch.h ${CMAKE_CURRENT_SOURCE_DIR}/src/vm_${DASM_ARCH}.dasc
-  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/dynasm/dynasm.lua minilua
-)
+  add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/buildvm_arch.h
+    COMMAND minilua ${CMAKE_CURRENT_SOURCE_DIR}/dynasm/dynasm.lua ${DASM_FLAGS} -o ${CMAKE_CURRENT_BINARY_DIR}/buildvm_arch.h ${CMAKE_CURRENT_SOURCE_DIR}/src/vm_${DASM_ARCH}.dasc
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/dynasm/dynasm.lua minilua
+  )
+endif(LUAJIT_SYSTEM_MINILUA)
 
 SET(SRC_LJLIB src/lib_base.c src/lib_math.c src/lib_bit.c src/lib_string.c src/lib_table.c
   src/lib_io.c src/lib_os.c src/lib_package.c src/lib_debug.c src/lib_jit.c src/lib_ffi.c)
@@ -306,15 +314,25 @@ src/host/buildvm_peobj.c src/host/buildvm_lib.c src/host/buildvm_fold.c
 ${CMAKE_CURRENT_BINARY_DIR}/buildvm_arch.h)
 
 ## GENERATE
-ADD_EXECUTABLE(buildvm ${SRC_BUILDVM})
-SET_TARGET_PROPERTIES(buildvm PROPERTIES COMPILE_DEFINITIONS "${TARGET_ARCH}")
+if(LUAJIT_SYSTEM_BUILDVM)
+else(LUAJIT_SYSTEM_BUILDVM)
+  ADD_EXECUTABLE(buildvm ${SRC_BUILDVM})
+  SET_TARGET_PROPERTIES(buildvm PROPERTIES COMPILE_DEFINITIONS "${TARGET_ARCH}")
+endif(LUAJIT_SYSTEM_BUILDVM)
 
 macro(add_buildvm_target _target _mode)
-  add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${_target}
-    COMMAND buildvm ARGS -m ${_mode} -o ${CMAKE_CURRENT_BINARY_DIR}/${_target} ${ARGN}
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    DEPENDS buildvm ${ARGN}
-  )
+  if(LUAJIT_SYSTEM_BUILDVM)
+    add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${_target}
+      COMMAND ${LUAJIT_SYSTEM_BUILDVM} ARGS -m ${_mode} -o ${CMAKE_CURRENT_BINARY_DIR}/${_target} ${ARGN}
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+  else(LUAJIT_SYSTEM_BUILDVM)
+    add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${_target}
+      COMMAND buildvm ARGS -m ${_mode} -o ${CMAKE_CURRENT_BINARY_DIR}/${_target} ${ARGN}
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+      DEPENDS buildvm ${ARGN}
+    )
+   endif(LUAJIT_SYSTEM_BUILDVM)
 endmacro(add_buildvm_target)
 
 if (MSVC)
