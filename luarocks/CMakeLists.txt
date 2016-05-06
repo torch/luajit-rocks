@@ -55,7 +55,7 @@ IF(WIN32)
   SET(MD5_EXECUTABLE_NAME "md5sum")
   SET(UNAME_M "x64")
   SET(SHEBANG
-"rem=rem --[[
+"::rem:: --[[
 @setlocal&  set PATH=${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_SUBDIR};%PATH% & set luafile=\"%~f0\" & if exist \"%~f0.bat\" set luafile=\"%~f0.bat\"
 @${CMAKE_INSTALL_PREFIX}/${INSTALL_BIN_SUBDIR}/${LUA_EXE_NAME}.exe %luafile% %*&  exit /b ]]")
 
