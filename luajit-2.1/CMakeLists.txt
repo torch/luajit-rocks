@@ -369,8 +369,12 @@ include_directories(BEFORE ${CMAKE_CURRENT_BINARY_DIR} dynasm src)
 
 IF(WITH_AMALG)
   add_library(libluajit SHARED src/ljamalg.c ${DEPS} )
+  add_library(luajit-static STATIC src/ljamalg.c ${DEPS} )
+  set_property(TARGET luajit-static PROPERTY POSITION_INDEPENDENT_CODE 1)
 ELSE()
   add_library(libluajit SHARED ${SRC_LJCORE} ${DEPS} )
+  add_library(luajit-static STATIC ${SRC_LJCORE} ${DEPS} )
+  set_property(TARGET luajit-static PROPERTY POSITION_INDEPENDENT_CODE 1)
 ENDIF()
 
 target_link_libraries (libluajit ${LIBS} )
