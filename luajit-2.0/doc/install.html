@@ -4,7 +4,7 @@
 <title>Installation</title>
 <meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
 <meta name="Author" content="Mike Pall">
-<meta name="Copyright" content="Copyright (C) 2005-2015, Mike Pall">
+<meta name="Copyright" content="Copyright (C) 2005-2017, Mike Pall">
 <meta name="Language" content="en">
 <link rel="stylesheet" type="text/css" href="bluequad.css" media="screen">
 <link rel="stylesheet" type="text/css" href="bluequad-print.css" media="print">
@@ -344,9 +344,12 @@ target OS differ, or you'll get assembler or linker errors. E.g. if
 you're compiling on a Windows or OSX host for embedded Linux or Android,
 you need to add <tt>TARGET_SYS=Linux</tt> to the examples below. For a
 minimal target OS, you may need to disable the built-in allocator in
-<tt>src/Makefile</tt> and use <tt>TARGET_SYS=Other</tt>. The examples
-below only show some popular targets &mdash; please check the comments
-in <tt>src/Makefile</tt> for more details.
+<tt>src/Makefile</tt> and use <tt>TARGET_SYS=Other</tt>. Don't forget to
+specify the same <tt>TARGET_SYS</tt> for the install step, too.
+</p>
+<p>
+The examples below only show some popular targets &mdash; please check
+the comments in <tt>src/Makefile</tt> for more details.
 </p>
 <pre class="code">
 # Cross-compile to a 32 bit binary on a multilib x64 OS
@@ -452,8 +455,8 @@ Or use Android. :-p
 ISDKP=$(xcrun --sdk iphoneos --show-sdk-path)
 ICC=$(xcrun --sdk iphoneos --find clang)
 ISDKF="-arch armv7 -isysroot $ISDKP"
-make HOST_CC="clang -m32 -arch i386" CROSS="$(dirname $ICC)/" \
-     TARGET_FLAGS="$ISDKF" TARGET_SYS=iOS
+make DEFAULT_CC=clang HOST_CC="clang -m32 -arch i386" \
+     CROSS="$(dirname $ICC)/" TARGET_FLAGS="$ISDKF" TARGET_SYS=iOS
 </pre>
 
 <h3 id="consoles">Cross-compiling for consoles</h3>
@@ -633,7 +636,7 @@ to me (the upstream) and not you (the package maintainer), anyway.
 </div>
 <div id="foot">
 <hr class="hide">
-Copyright &copy; 2005-2015 Mike Pall
+Copyright &copy; 2005-2017 Mike Pall
 <span class="noprint">
 &middot;
 <a href="contact.html">Contact</a>
