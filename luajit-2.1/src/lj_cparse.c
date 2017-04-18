@@ -1777,12 +1777,12 @@ static void cp_decl_multi(CPState *cp)
 	cp_line(cp, hashline);
 	continue;
       } else if (tok == CTOK_IDENT &&
-		 cp->str->hash == H_(187aab88,fcb60b42)) { /* line */
+		 cp->str->hash == H_(d9f7a392,4c1b3476)) { /* line */
 	if (cp_next(cp) != CTOK_INTEGER) cp_err_token(cp, tok);
 	cp_line(cp, hashline);
 	continue;
       } else if (tok == CTOK_IDENT &&
-	  cp->str->hash == H_(f5e6b4f8,1d509107)) { /* pragma */
+	  cp->str->hash == H_(3f192524,f711b0ec)) { /* pragma */
 	cp_pragma(cp, hashline);
 	continue;
       } else {
