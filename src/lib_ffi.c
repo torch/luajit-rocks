@@ -1,6 +1,6 @@
 /*
 ** FFI library.
-** Copyright (C) 2005-2015 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2017 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #define lib_ffi_c
@@ -505,10 +505,7 @@ LJLIB_CF(ffi_new)	LJLIB_REC(.)
   }
   if (sz == CTSIZE_INVALID)
     lj_err_arg(L, 1, LJ_ERR_FFI_INVSIZE);
-  if (!(info & CTF_VLA) && ctype_align(info) <= CT_MEMALIGN)
-    cd = lj_cdata_new(cts, id, sz);
-  else
-    cd = lj_cdata_newv(L, id, sz, ctype_align(info));
+  cd = lj_cdata_newx(cts, id, sz, info);
   setcdataV(L, o-1, cd);  /* Anchor the uninitialized cdata. */
   lj_cconv_ct_init(cts, ct, sz, cdataptr(cd),
 		   o, (MSize)(L->top - o));  /* Initialize cdata. */
@@ -832,7 +829,7 @@ static GCtab *ffi_finalizer(lua_State *L)
   settabV(L, L->top++, t);
   setgcref(t->metatable, obj2gco(t));
   setstrV(L, lj_tab_setstr(L, t, lj_str_newlit(L, "__mode")),
-	  lj_str_newlit(L, "K"));
+	  lj_str_newlit(L, "k"));
   t->nomm = (uint8_t)(~(1u<<MM_mode));
   return t;
 }

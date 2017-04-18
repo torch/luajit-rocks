@@ -1,6 +1,6 @@
 /*
 ** C declaration parser.
-** Copyright (C) 2005-2015 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2017 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #include "lj_obj.h"
@@ -297,13 +297,17 @@ static CPToken cp_next_(CPState *cp)
       else return '/';
       break;
     case '|':
-      if (cp_get(cp) != '|') return '|'; cp_get(cp); return CTOK_OROR;
+      if (cp_get(cp) != '|') return '|';
+      cp_get(cp); return CTOK_OROR;
     case '&':
-      if (cp_get(cp) != '&') return '&'; cp_get(cp); return CTOK_ANDAND;
+      if (cp_get(cp) != '&') return '&';
+      cp_get(cp); return CTOK_ANDAND;
     case '=':
-      if (cp_get(cp) != '=') return '='; cp_get(cp); return CTOK_EQ;
+      if (cp_get(cp) != '=') return '=';
+      cp_get(cp); return CTOK_EQ;
     case '!':
-      if (cp_get(cp) != '=') return '!'; cp_get(cp); return CTOK_NE;
+      if (cp_get(cp) != '=') return '!';
+      cp_get(cp); return CTOK_NE;
     case '<':
       if (cp_get(cp) == '=') { cp_get(cp); return CTOK_LE; }
       else if (cp->c == '<') { cp_get(cp); return CTOK_SHL; }
@@ -313,7 +317,8 @@ static CPToken cp_next_(CPState *cp)
       else if (cp->c == '>') { cp_get(cp); return CTOK_SHR; }
       return '>';
     case '-':
-      if (cp_get(cp) != '>') return '-'; cp_get(cp); return CTOK_DEREF;
+      if (cp_get(cp) != '>') return '-';
+      cp_get(cp); return CTOK_DEREF;
     case '$':
       return cp_param(cp);
     case '\0': return CTOK_EOF;
@@ -1744,6 +1749,16 @@ static void cp_pragma(CPState *cp, BCLine pragmaline)
   }
 }
 
+/* Handle line number. */
+static void cp_line(CPState *cp, BCLine hashline)
+{
+  BCLine newline = cp->val.u32;
+  /* TODO: Handle file name and include it in error messages. */
+  while (cp->tok != CTOK_EOF && cp->linenumber == hashline)
+    cp_next(cp);
+  cp->linenumber = newline;
+}
+
 /* Parse multiple C declarations of types or extern identifiers. */
 static void cp_decl_multi(CPState *cp)
 {
@@ -1756,12 +1771,23 @@ static void cp_decl_multi(CPState *cp)
       continue;
     }
     if (cp->tok == '#') {  /* Workaround, since we have no preprocessor, yet. */
-      BCLine pragmaline = cp->linenumber;
-      if (!(cp_next(cp) == CTOK_IDENT &&
-	    cp->str->hash == H_(f5e6b4f8,1d509107)))  /* pragma */
+      BCLine hashline = cp->linenumber;
+      CPToken tok = cp_next(cp);
+      if (tok == CTOK_INTEGER) {
+	cp_line(cp, hashline);
+	continue;
+      } else if (tok == CTOK_IDENT &&
+		 cp->str->hash == H_(187aab88,fcb60b42)) { /* line */
+	if (cp_next(cp) != CTOK_INTEGER) cp_err_token(cp, tok);
+	cp_line(cp, hashline);
+	continue;
+      } else if (tok == CTOK_IDENT &&
+	  cp->str->hash == H_(f5e6b4f8,1d509107)) { /* pragma */
+	cp_pragma(cp, hashline);
+	continue;
+      } else {
 	cp_errmsg(cp, cp->tok, LJ_ERR_XSYMBOL);
-      cp_pragma(cp, pragmaline);
-      continue;
+      }
     }
     scl = cp_decl_spec(cp, &decl, CDF_TYPEDEF|CDF_EXTERN|CDF_STATIC);
     if ((cp->tok == ';' || cp->tok == CTOK_EOF) &&
