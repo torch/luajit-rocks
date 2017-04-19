@@ -74,7 +74,7 @@ option ( LUAJIT_USE_GDBJIT "Luajit uses GDBJIT?" OFF )
 option ( LUA_USE_APICHECK "LuaJIT does API checks?" OFF )
 option ( LUA_USE_ASSERT "LuaJIT does asserts?" OFF )
 
-option ( LUAJIT_ENABLE_GC64 "LuaJIT 64 bits support" OFF )
+option ( LUAJIT_ENABLE_GC64 "LuaJIT 64 bits support" ON )
 
 MARK_AS_ADVANCED(
   LUAJIT_DISABLE_FFI
